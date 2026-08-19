@@ -1,5 +1,6 @@
 import React, { useCallback, useState } from "react";
 import { AppDataProvider, useAppData } from "./store/AppDataProvider.jsx";
+import { CloudSyncProvider } from "./store/CloudSyncProvider.jsx";
 import { useTheme } from "./hooks/useTheme.js";
 import { useSound } from "./hooks/useSound.js";
 import { useNotifications, useStreakRiskReminder } from "./hooks/useNotifications.js";
@@ -94,8 +95,10 @@ function Shell() {
 
 export default function App() {
   return (
-    <AppDataProvider>
-      <Shell />
-    </AppDataProvider>
+    <CloudSyncProvider>
+      <AppDataProvider>
+        <Shell />
+      </AppDataProvider>
+    </CloudSyncProvider>
   );
 }

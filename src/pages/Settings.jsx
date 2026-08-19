@@ -6,6 +6,7 @@ import { ACCENT_UNLOCKS } from "../store/defaults.js";
 import { levelInfo } from "../lib/gamification.js";
 import { storage, STORAGE_KEYS, exportAllData } from "../lib/storage.js";
 import { downloadTextFile } from "../lib/exportCsv.js";
+import { CloudConnectionsCard } from "../components/CloudSync.jsx";
 
 export function Settings({ notifications }) {
   const { settings, setSettings, game, monthlyData, migration, favorites, pinned } = useAppData();
@@ -128,11 +129,13 @@ export function Settings({ notifications }) {
         </div>
       </Card>
 
+      <CloudConnectionsCard />
+
       <Card className="mb-5">
-        <div className="eyebrow mb-3">Data &amp; Sync</div>
+        <div className="eyebrow mb-3">Data &amp; Backup</div>
         <p className="text-sm dim mb-3">
-          Everything is stored on this device via a small storage abstraction (see <code className="mono">src/lib/storage.js</code>). A future update can point that
-          same interface at Firebase, Supabase, Appwrite, or PocketBase to sync across your laptop, phone, and iPad without changing any screen in this app.
+          Everything is also kept in a local, offline-capable cache on this device (see <code className="mono">src/lib/storage.js</code>). Export a
+          point-in-time backup any time, independent of Cloud Sync.
         </p>
         <div className="flex gap-2 flex-wrap">
           <button className="btn btn-secondary" onClick={exportData}><Icon name="download" size={14} /> Export backup (JSON)</button>

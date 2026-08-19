@@ -6,6 +6,7 @@ import { MONTHS, CURRENT_MONTH_KEY, getEntry, uid, isoWeekKey, dayKey } from "..
 import { levelInfo, levelTitle, BADGES, XP_RULES } from "../lib/gamification.js";
 import { todaysChallenge } from "../lib/dailyChallenges.js";
 import { DEFAULT_GAME, DEFAULT_MIGRATION, DEFAULT_SETTINGS } from "./defaults.js";
+import { cloudSync } from "../lib/cloud/CloudSyncEngine.js";
 import {
   computeMonthStats,
   computeCategoryStatsForMonth,
@@ -48,6 +49,104 @@ export function AppDataProvider({ children }) {
   const [toasts, setToasts] = useState([]);
   const [celebration, setCelebration] = useState(null);
 
+  /* ---------------- cloud sync wiring ----------------
+   * Local state (above) remains the fast, offline-capable source pages
+   * read from — unchanged. Cloud sync is a purely additive side channel:
+   * mutators below also push a precise, granular description of what
+   * changed; a separate reconcile/Realtime path (never routed through
+   * these mutators) pulls authoritative state and applies it via the
+   * setters registered here. `remoteEchoRef` prevents a just-applied
+   * remote value from immediately bouncing back out as a redundant push.
+   */
+  const remoteEchoRef = useRef({});
+  const snapshotRef = useRef();
+  snapshotRef.current = { monthlyData, migration, game, settings, favorites, pinned, recentTaskIds, activityLog, activeTimer };
+
+  useEffect(() => {
+    cloudSync.registerHandlers({
+      getLocalSnapshot: () => snapshotRef.current,
+      apply: {
+        setMonthlyData: (blob) => setMonthlyData(blob),
+        setMigration: (blob) => {
+          remoteEchoRef.current.migrationTotal = blob.total;
+          setMigration(blob);
+        },
+        setGame: (updater) => {
+          setGame((prev) => {
+            const next = typeof updater === "function" ? updater(prev) : { ...prev, ...updater };
+            remoteEchoRef.current.game = JSON.stringify(next);
+            return next;
+          });
+        },
+        setActivityLog: (arr) => setActivityLog(arr),
+        setSettings: (updater) => {
+          setSettings((prev) => {
+            const next = typeof updater === "function" ? updater(prev) : { ...prev, ...updater };
+            remoteEchoRef.current.settingsSynced = JSON.stringify({ closingDeadlineDay: next.closingDeadlineDay, dailyGoalTasks: next.dailyGoalTasks });
+            return next;
+          });
+        },
+        setFavorites: (arr) => {
+          remoteEchoRef.current.prefs = JSON.stringify({ favorites: arr, pinned: snapshotRef.current.pinned, recentTasks: snapshotRef.current.recentTaskIds });
+          setFavorites(arr);
+        },
+        setPinned: (arr) => {
+          remoteEchoRef.current.prefs = JSON.stringify({ favorites: snapshotRef.current.favorites, pinned: arr, recentTasks: snapshotRef.current.recentTaskIds });
+          setPinned(arr);
+        },
+        setRecentTaskIds: (arr) => {
+          remoteEchoRef.current.prefs = JSON.stringify({ favorites: snapshotRef.current.favorites, pinned: snapshotRef.current.pinned, recentTasks: arr });
+          setRecentTaskIds(arr);
+        },
+        adoptRemoteActiveTimer: (timer) => {
+          remoteEchoRef.current.activeTimer = JSON.stringify(timer);
+          setActiveTimer(timer);
+        },
+      },
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    if (!loaded) return;
+    const json = JSON.stringify(game);
+    if (remoteEchoRef.current.game === json) return;
+    cloudSync.pushGamificationState(game);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [game, loaded]);
+
+  useEffect(() => {
+    if (!loaded) return;
+    if (remoteEchoRef.current.migrationTotal === migration.total) return;
+    cloudSync.pushMigrationState(migration.total);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [migration.total, loaded]);
+
+  useEffect(() => {
+    if (!loaded) return;
+    const json = JSON.stringify({ closingDeadlineDay: settings.closingDeadlineDay, dailyGoalTasks: settings.dailyGoalTasks });
+    if (remoteEchoRef.current.settingsSynced === json) return;
+    cloudSync.pushSettings(settings);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [settings.closingDeadlineDay, settings.dailyGoalTasks, loaded]);
+
+  useEffect(() => {
+    if (!loaded) return;
+    const json = JSON.stringify({ favorites, pinned, recentTasks: recentTaskIds });
+    if (remoteEchoRef.current.prefs === json) return;
+    cloudSync.pushPreferences({ favorites, pinned, recentTasks: recentTaskIds });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [favorites, pinned, recentTaskIds, loaded]);
+
+  useEffect(() => {
+    if (!loaded) return;
+    const json = JSON.stringify(activeTimer);
+    if (remoteEchoRef.current.activeTimer === json) return;
+    if (activeTimer) cloudSync.pushActiveTimer(activeTimer);
+    else cloudSync.clearActiveTimer();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTimer, loaded]);
+
   /* ---------------- timer tick ---------------- */
   useEffect(() => {
     if (!activeTimer) return;
@@ -65,7 +164,9 @@ export function AppDataProvider({ children }) {
 
   const logActivity = useCallback(
     (entry) => {
-      setActivityLog((prev) => [{ id: uid(), ts: Date.now(), ...entry }, ...prev].slice(0, 200));
+      const full = { id: uid(), ts: Date.now(), ...entry };
+      setActivityLog((prev) => [full, ...prev].slice(0, 200));
+      cloudSync.pushActivityLogEntry(full);
     },
     [setActivityLog]
   );
@@ -108,15 +209,40 @@ export function AppDataProvider({ children }) {
     (taskId, monthKey, patch) => {
       setMonthlyData((prev) => {
         const entry = getEntry(prev, monthKey, taskId);
-        return { ...prev, [monthKey]: { ...prev[monthKey], [taskId]: { ...entry, ...patch } } };
+        const next = { ...entry, ...patch };
+        cloudSync.pushReconciliationEntry(monthKey, taskId, next);
+        return { ...prev, [monthKey]: { ...prev[monthKey], [taskId]: next } };
       });
     },
     [setMonthlyData]
   );
 
+  const addSource = useCallback(
+    (taskId, monthKey, source) => {
+      const full = { id: uid(), ...source };
+      updateEntry(taskId, monthKey, { sources: [...getEntry(monthlyData, monthKey, taskId).sources, full] });
+      cloudSync.pushSource(monthKey, taskId, full);
+      return full.id;
+    },
+    [monthlyData, updateEntry]
+  );
+
+  const removeSource = useCallback(
+    (taskId, monthKey, sourceId) => {
+      updateEntry(taskId, monthKey, { sources: getEntry(monthlyData, monthKey, taskId).sources.filter((s) => s.id !== sourceId) });
+      cloudSync.removeSource(sourceId);
+    },
+    [monthlyData, updateEntry]
+  );
+
   const updateMigTask = useCallback(
     (taskId, patch) => {
-      setMigration((prev) => ({ ...prev, tasks: prev.tasks.map((t) => (t.id === taskId ? { ...t, ...patch } : t)) }));
+      setMigration((prev) => {
+        const next = { ...prev, tasks: prev.tasks.map((t) => (t.id === taskId ? { ...t, ...patch } : t)) };
+        const updated = next.tasks.find((t) => t.id === taskId);
+        if (updated) cloudSync.pushMigrationTask(updated);
+        return next;
+      });
     },
     [setMigration]
   );
@@ -139,6 +265,7 @@ export function AppDataProvider({ children }) {
             },
           };
         });
+        cloudSync.pushSession(session, "reconciliation", prev.taskId, prev.monthKey);
         const task = TASK_BY_ID[prev.taskId];
         if (elapsed >= 5) {
           logActivity({ type: "session", taskId: prev.taskId, taskName: task?.name, duration: elapsed, message: `Logged ${Math.round(elapsed / 60)}m on ${task?.name || "a task"}` });
@@ -148,6 +275,7 @@ export function AppDataProvider({ children }) {
           ...mg,
           tasks: mg.tasks.map((t) => (t.id === prev.taskId ? { ...t, timeSeconds: (t.timeSeconds || 0) + elapsed, sessions: [...(t.sessions || []), session] } : t)),
         }));
+        cloudSync.pushSession(session, "migration", prev.taskId, null);
       }
       return null;
     });
@@ -167,6 +295,7 @@ export function AppDataProvider({ children }) {
       setActiveTimer((prev) => (prev && prev.kind === kind && prev.taskId === taskId && prev.monthKey === (monthKey || null) ? null : prev));
       if (kind === "recon") updateEntry(taskId, monthKey, { timeSeconds: 0, sessions: [] });
       else updateMigTask(taskId, { timeSeconds: 0, sessions: [] });
+      cloudSync.clearSessionsFor(kind === "recon" ? "reconciliation" : "migration", taskId, kind === "recon" ? monthKey : null);
     },
     [setActiveTimer, updateEntry, updateMigTask]
   );
@@ -252,7 +381,9 @@ export function AppDataProvider({ children }) {
       setMigration((prev) => {
         const prevDone = prev.log.length ? prev.log[prev.log.length - 1].totalAfter : 0;
         const totalAfter = Math.max(0, Math.min(prev.total, prevDone + delta));
-        return { ...prev, log: [...prev.log, { id: uid(), ts: Date.now(), change: totalAfter - prevDone, totalAfter, note: note || "" }] };
+        const logEntry = { id: uid(), ts: Date.now(), change: totalAfter - prevDone, totalAfter, note: note || "" };
+        cloudSync.pushMigrationLogEntry(logEntry);
+        return { ...prev, log: [...prev.log, logEntry] };
       });
       if (delta > 0) {
         awardXP(Math.min(15, Math.max(1, Math.round(delta / 5))), "Names migrated");
@@ -267,6 +398,7 @@ export function AppDataProvider({ children }) {
       if (!name.trim()) return;
       const newTask = { id: uid(), name: name.trim(), status: "pending", timeSeconds: 0, sessions: [], notes: "", createdAt: Date.now() };
       setMigration((prev) => ({ ...prev, tasks: [newTask, ...prev.tasks] }));
+      cloudSync.pushMigrationTask(newTask);
       logActivity({ type: "migration-add", message: `Added migration task "${newTask.name}"` });
       return newTask.id;
     },
@@ -276,6 +408,7 @@ export function AppDataProvider({ children }) {
     (id) => {
       setActiveTimer((prev) => (prev && prev.kind === "migration" && prev.taskId === id ? null : prev));
       setMigration((prev) => ({ ...prev, tasks: prev.tasks.filter((t) => t.id !== id) }));
+      cloudSync.deleteMigrationTask(id);
     },
     [setActiveTimer, setMigration]
   );
@@ -385,6 +518,7 @@ export function AppDataProvider({ children }) {
       stillMissing.forEach((id) => {
         const b = BADGES.find((x) => x.id === id);
         if (b) {
+          cloudSync.pushBadge(id);
           pushToast(`Badge unlocked — ${b.name}`, "badge");
           logActivity({ type: "badge", message: `Unlocked badge "${b.name}"` });
           setTimeout(() => setCelebration({ type: "badge", badge: b }), 250);
@@ -448,7 +582,7 @@ export function AppDataProvider({ children }) {
     toasts, pushToast, dismissToast,
     celebration, setCelebration,
 
-    updateEntry, updateMigTask,
+    updateEntry, addSource, removeSource, updateMigTask,
     setStatus, setMigStatus,
     startTimer, stopActiveTimer, resetTimer,
     liveSecondsRecon, liveSecondsMig,

@@ -2,6 +2,7 @@ import React, { useState } from "react";
 import { Icon } from "../lib/Icon.jsx";
 import { NAV_SECTIONS, BOTTOM_NAV_ITEMS } from "../lib/nav.js";
 import { LevelAvatar } from "./primitives.jsx";
+import { SyncStatusPill } from "./CloudSync.jsx";
 import { levelInfo, levelTitle, levelRankTier, xpProgressPercent } from "../lib/gamification.js";
 import { useAppData } from "../store/AppDataProvider.jsx";
 
@@ -66,6 +67,7 @@ export function AppShell({ page, navigate, onOpenPalette, children }) {
             <span className="hide-xs">Search</span>
             <span className="kbd">⌘K</span>
           </button>
+          <SyncStatusPill navigate={navigate} />
           <div className="flex items-center gap-1.5 text-sm fw-semibold" style={{ color: game.streak > 0 ? "var(--amber)" : "var(--muted)" }}>
             <Icon name="flame" size={16} />
             {game.streak > 0 ? `${game.streak}d` : "0d"}

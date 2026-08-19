@@ -13,7 +13,7 @@ import { useAppData } from "../store/AppDataProvider.jsx";
 
 export function TaskDetailPanel({ task, monthKey }) {
   const {
-    monthlyData, updateEntry, setStatus, startTimer, stopActiveTimer, resetTimer,
+    monthlyData, updateEntry, addSource, removeSource, setStatus, startTimer, stopActiveTimer, resetTimer,
     liveSecondsRecon, activeTimer, isTaskFavorite, isTaskPinned, toggleFavorite, togglePinned,
   } = useAppData();
 
@@ -79,14 +79,14 @@ export function TaskDetailPanel({ task, monthKey }) {
                     </a>
                   )}
                 </span>
-                <button onClick={() => updateEntry(task.id, monthKey, { sources: entry.sources.filter((x) => x.id !== s.id) })} aria-label="Remove source">
+                <button onClick={() => removeSource(task.id, monthKey, s.id)} aria-label="Remove source">
                   <Icon name="trash-2" size={14} style={{ color: "var(--rust)" }} />
                 </button>
               </div>
             ))}
           </div>
         )}
-        <AddSourceForm onAdd={(s) => updateEntry(task.id, monthKey, { sources: [...entry.sources, s] })} />
+        <AddSourceForm onAdd={(s) => addSource(task.id, monthKey, s)} />
       </div>
 
       <div>
