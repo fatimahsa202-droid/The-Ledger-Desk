@@ -28,9 +28,14 @@ async function writeHtml() {
   const js = readFileSync(path.join(outDir, "bundle.js"), "utf8");
   const css = readFileSync(path.join(root, "src/styles.css"), "utf8");
   const template = readFileSync(path.join(root, "src/index.template.html"), "utf8");
+  // Function-form replacement: the string form treats "$&", "$1", "$$" etc.
+  // in the replacement as special patterns, and minified JS/CSS can easily
+  // contain "$&" by coincidence (e.g. a minifier-assigned `$` variable next
+  // to a `&&`) — silently corrupting the output. The function form inserts
+  // the return value literally, with no pattern interpretation.
   const html = template
-    .replace("/*__STYLES__*/", css)
-    .replace("/*__BUNDLE__*/", js);
+    .replace("/*__STYLES__*/", () => css)
+    .replace("/*__BUNDLE__*/", () => js);
   writeFileSync(path.join(root, "index.html"), html);
   const kb = (Buffer.byteLength(html) / 1024).toFixed(0);
   console.log(`Wrote index.html (${kb} KB)`);

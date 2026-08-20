@@ -1,4 +1,5 @@
-import { ensureClient, getStoredConnection, setStoredConnection, disconnectClient, isPlausibleConnection } from "./supabaseClient.js";
+import { ensureClient, getEffectiveConnection, setStoredConnection, disconnectClient, isPlausibleConnection } from "./supabaseClient.js";
+import { DEPLOYED_SUPABASE_URL, DEPLOYED_SUPABASE_ANON_KEY } from "./deployedConfig.js";
 import { getActiveAuthStrategy } from "./authStrategies.js";
 import { enqueue, flushOutbox, outboxCount, outboxFailedCount, loadOutbox, clearOutbox } from "./outbox.js";
 import * as map from "./schema-map.js";
@@ -50,9 +51,12 @@ class CloudSyncEngine {
   /* ---------------------------------------------------------- lifecycle --- */
 
   async initFromStorage() {
-    const conn = getStoredConnection();
-    if (!conn?.url || !conn?.anonKey) return;
-    await this.connect(conn.url, conn.anonKey, { persist: false });
+    const conn = getEffectiveConnection();
+    if (!conn) return;
+    // Only persist as a stored override when it actually is one — the
+    // baked-in default connecting silently shouldn't get written to
+    // localStorage as if the user had configured something.
+    await this.connect(conn.url, conn.anonKey, { persist: conn.isOverride });
   }
 
   async connect(url, anonKey, { persist = true } = {}) {
@@ -107,6 +111,14 @@ class CloudSyncEngine {
     this.userId = null;
     clearOutbox();
     diagReset();
+  }
+
+  /** Advanced: drop a device-level connection override and go back to the build's baked-in project. */
+  async resetToDefault() {
+    this.disconnect();
+    if (DEPLOYED_SUPABASE_URL && DEPLOYED_SUPABASE_ANON_KEY) {
+      await this.connect(DEPLOYED_SUPABASE_URL, DEPLOYED_SUPABASE_ANON_KEY, { persist: false });
+    }
   }
 
   async requestSignInEmail(email) {

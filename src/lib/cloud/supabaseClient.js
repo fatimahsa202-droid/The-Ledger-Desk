@@ -1,14 +1,18 @@
 import { createClient } from "@supabase/supabase-js";
+import { DEPLOYED_SUPABASE_URL, DEPLOYED_SUPABASE_ANON_KEY } from "./deployedConfig.js";
 
 /**
  * Manages the lifecycle of the Supabase client instance.
  *
- * Connection info (Project URL + anon key) is entered by the user at
- * runtime, per device, via Settings -> Connections — never hard-coded into
- * source, never committed. It's stored under its own localStorage key,
+ * The normal connection target is baked into the deployed build
+ * (deployedConfig.js) — a normal user never sees or enters a Project URL
+ * or key. An explicit override can still be set, per device, from Settings
+ * -> Cloud Sync -> Advanced (for switching projects or local testing
+ * against a different one); it's stored under its own localStorage key,
  * deliberately outside the STORAGE_KEYS synced-data set, since it's the
  * bootstrap credential this whole sync system depends on (a chicken-and-egg
- * problem to sync it through itself).
+ * problem to sync it through itself). An override always wins over the
+ * baked-in default.
  */
 
 const CONNECTION_KEY = "ledgerdesk:cloud-connection";
@@ -29,6 +33,20 @@ export function setStoredConnection(conn) {
   } catch {
     /* private browsing / storage unavailable */
   }
+}
+
+/**
+ * The connection the app should actually use: a device-level override if
+ * one has been set (Advanced), otherwise the build's baked-in default.
+ * `isOverride` lets Advanced UI show which one is currently active.
+ */
+export function getEffectiveConnection() {
+  const stored = getStoredConnection();
+  if (stored?.url && stored?.anonKey) return { url: stored.url, anonKey: stored.anonKey, isOverride: true };
+  if (DEPLOYED_SUPABASE_URL && DEPLOYED_SUPABASE_ANON_KEY) {
+    return { url: DEPLOYED_SUPABASE_URL, anonKey: DEPLOYED_SUPABASE_ANON_KEY, isOverride: false };
+  }
+  return null;
 }
 
 let clientInstance = null;
