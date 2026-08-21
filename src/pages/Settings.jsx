@@ -7,14 +7,45 @@ import { levelInfo } from "../lib/gamification.js";
 import { storage, STORAGE_KEYS, exportAllData } from "../lib/storage.js";
 import { downloadTextFile } from "../lib/exportCsv.js";
 import { CloudConnectionsCard } from "../components/CloudSync.jsx";
+import { WEEKDAY_LABELS } from "../lib/recurrence.js";
 
 export function Settings({ notifications }) {
-  const { settings, setSettings, game, monthlyData, migration, favorites, pinned } = useAppData();
+  const { settings, setSettings, game, monthlyData, migration, favorites, pinned, recalculableBusinessDayOccurrences, applyWorkingDaysChange } = useAppData();
   const fileRef = useRef(null);
   const [importMsg, setImportMsg] = useState("");
+  const [pendingWorkingDays, setPendingWorkingDays] = useState(null); // draft while the picker is being edited
+  const [recalcPrompt, setRecalcPrompt] = useState(null); // { count, next } when a save has candidates to confirm
   const level = levelInfo(game.xp).level;
+  const workingDaysDraft = pendingWorkingDays || settings.workingDays;
+  const workingDaysDirty = pendingWorkingDays && JSON.stringify([...pendingWorkingDays].sort()) !== JSON.stringify([...settings.workingDays].sort());
 
   const patch = (p) => setSettings((prev) => ({ ...prev, ...p }));
+
+  const toggleWorkingDay = (i) => {
+    const set = new Set(workingDaysDraft);
+    set.has(i) ? set.delete(i) : set.add(i);
+    if (set.size === 0) return; // at least one working day required
+    setPendingWorkingDays([...set].sort());
+    setRecalcPrompt(null);
+  };
+
+  const saveWorkingDays = () => {
+    const next = pendingWorkingDays;
+    if (!next) return;
+    const candidates = recalculableBusinessDayOccurrences();
+    if (candidates.length > 0) {
+      setRecalcPrompt({ count: candidates.length, next });
+    } else {
+      applyWorkingDaysChange(next, { recalcUpcoming: false });
+      setPendingWorkingDays(null);
+    }
+  };
+
+  const resolveRecalcPrompt = (recalcUpcoming) => {
+    applyWorkingDaysChange(recalcPrompt.next, { recalcUpcoming });
+    setRecalcPrompt(null);
+    setPendingWorkingDays(null);
+  };
 
   const accentUnlocked = (key) => {
     const req = ACCENT_UNLOCKS[key].requires;
@@ -127,6 +158,52 @@ export function Settings({ notifications }) {
             <input id="goal" type="number" min={1} max={20} value={settings.dailyGoalTasks} onChange={(e) => patch({ dailyGoalTasks: Math.max(1, Math.min(20, Number(e.target.value) || 1)) })} className="input mono" />
           </div>
         </div>
+
+        <div className="field-label mt-4">Working days</div>
+        <p className="text-xs dim mb-2">
+          Used by every Business Day recurrence rule (First/Last Business Day, BD+X). No day is assumed automatically
+          — this is the only place the recurrence engine reads a working week from.
+        </p>
+        <div className="flex gap-1 flex-wrap mb-2">
+          {WEEKDAY_LABELS.map((label, i) => {
+            const on = workingDaysDraft.includes(i);
+            return (
+              <button
+                key={i}
+                type="button"
+                className="tag-chip"
+                style={on ? { background: "linear-gradient(120deg,var(--accent-1),var(--accent-2))", color: "#fff", borderColor: "transparent" } : undefined}
+                onClick={() => toggleWorkingDay(i)}
+              >
+                {label}
+              </button>
+            );
+          })}
+        </div>
+        {workingDaysDirty && !recalcPrompt && (
+          <div className="flex gap-2 mb-2">
+            <button className="btn btn-primary btn-sm" onClick={saveWorkingDays}>Save working days</button>
+            <button className="btn btn-ghost btn-sm" onClick={() => setPendingWorkingDays(null)}>Cancel</button>
+          </div>
+        )}
+        {recalcPrompt && (
+          <div className="callout-box mb-2" style={{ border: "1px solid var(--border)", borderRadius: 8, padding: 12, background: "var(--bg-soft)" }}>
+            <p className="text-sm mb-2">
+              This affects newly generated occurrences. You have <strong>{recalcPrompt.count}</strong> upcoming business-day-based
+              occurrence{recalcPrompt.count === 1 ? "" : "s"} already scheduled under the previous working week — their dates
+              won't change automatically.
+            </p>
+            <div className="flex gap-2 flex-wrap">
+              <button className="btn btn-primary btn-sm" onClick={() => resolveRecalcPrompt(true)}>
+                Update these {recalcPrompt.count} upcoming occurrence{recalcPrompt.count === 1 ? "" : "s"}
+              </button>
+              <button className="btn btn-secondary btn-sm" onClick={() => resolveRecalcPrompt(false)}>Keep as scheduled</button>
+            </div>
+            <p className="text-xs dim mt-2" style={{ marginBottom: 0 }}>
+              Only Pending, not-yet-due, business-day-derived occurrences are ever eligible — Done, in-progress, and overdue occurrences are never touched.
+            </p>
+          </div>
+        )}
       </Card>
 
       <CloudConnectionsCard />

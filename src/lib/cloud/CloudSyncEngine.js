@@ -9,6 +9,8 @@ const TABLES = [
   "reconciliation_entries", "work_sessions", "sources", "migration_state", "migration_log",
   "migration_tasks", "activity_log", "gamification_state", "badges_earned", "active_timer",
   "settings_cloud", "preferences_cloud",
+  // Phase A — dynamic task foundation.
+  "task_definitions", "categories", "task_occurrences",
 ];
 
 const RECONCILE_INTERVAL_MS = 45_000;
@@ -243,7 +245,7 @@ class CloudSyncEngine {
     diagPatch({ status: "syncing" });
     try {
       const uid = this.userId;
-      const [entries, sessions, sources, migState, migLog, migTasks, activity, game, badges, timer, settings, prefs] = await Promise.all([
+      const [entries, sessions, sources, migState, migLog, migTasks, activity, game, badges, timer, settings, prefs, taskDefs, cats, occs] = await Promise.all([
         this.client.from("reconciliation_entries").select("*").eq("user_id", uid),
         this.client.from("work_sessions").select("*").eq("user_id", uid),
         this.client.from("sources").select("*").eq("user_id", uid),
@@ -256,9 +258,12 @@ class CloudSyncEngine {
         this.client.from("active_timer").select("*").eq("user_id", uid).maybeSingle(),
         this.client.from("settings_cloud").select("*").eq("user_id", uid).maybeSingle(),
         this.client.from("preferences_cloud").select("*").eq("user_id", uid).maybeSingle(),
+        this.client.from("task_definitions").select("*").eq("user_id", uid),
+        this.client.from("categories").select("*").eq("user_id", uid),
+        this.client.from("task_occurrences").select("*").eq("user_id", uid),
       ]);
 
-      const firstError = [entries, sessions, sources, migState, migLog, migTasks, activity, game, badges, timer, settings, prefs].find((r) => r.error)?.error;
+      const firstError = [entries, sessions, sources, migState, migLog, migTasks, activity, game, badges, timer, settings, prefs, taskDefs, cats, occs].find((r) => r.error)?.error;
       if (firstError) throw firstError;
 
       const h = this.applyHandlers;
@@ -276,6 +281,13 @@ class CloudSyncEngine {
         h.setFavorites(prefsBlob.favorites);
         h.setPinned(prefsBlob.pinned);
         h.setRecentTaskIds(prefsBlob.recentTasks);
+        // Phase A — only apply if the cloud actually has definitions/categories
+        // for this account; an empty result here means "not migrated yet",
+        // not "delete everything local" (the first-time migration below is
+        // what uploads the local defaults in that case).
+        if ((taskDefs.data || []).length > 0) h.setTaskDefinitions(map.rowsToTaskDefinitions(taskDefs.data));
+        if ((cats.data || []).length > 0) h.setCategoryDefs(map.rowsToCategories(cats.data));
+        h.setOccurrences(map.rowsToOccurrences(occs.data || []));
       }
 
       const now = Date.now();
@@ -379,6 +391,33 @@ class CloudSyncEngine {
     this._push("preferences_cloud", map.buildPreferencesRow(this.userId, prefs), { conflictKeys: ["user_id"] });
   }
 
+  /* -------------------------------------------------- Phase A: push ---- */
+
+  pushTaskDefinition(def) {
+    if (!this.isConnected()) return;
+    this._push("task_definitions", map.buildTaskDefinitionRow(this.userId, def), { conflictKeys: ["id"] });
+  }
+
+  deleteTaskDefinition(id) {
+    if (!this.isConnected()) return;
+    this._push("task_definitions", { id }, { isDelete: true, match: { id, user_id: this.userId } });
+  }
+
+  pushCategory(cat) {
+    if (!this.isConnected()) return;
+    this._push("categories", map.buildCategoryRow(this.userId, cat), { conflictKeys: ["id"] });
+  }
+
+  deleteCategory(id) {
+    if (!this.isConnected()) return;
+    this._push("categories", { id }, { isDelete: true, match: { id, user_id: this.userId } });
+  }
+
+  pushOccurrence(occ) {
+    if (!this.isConnected()) return;
+    this._push("task_occurrences", map.buildOccurrenceRow(this.userId, occ), { conflictKeys: ["id"] });
+  }
+
   async flushOutboxNow() {
     if (!this.client) return;
     const before = outboxCount();
@@ -449,6 +488,11 @@ class CloudSyncEngine {
         ["migration_tasks", (mig.tasks || []).map((t) => map.buildMigrationTaskRow(this.userId, t))],
         ["activity_log", (snap.activityLog || []).map((a) => map.buildActivityLogRow(this.userId, a))],
         ["badges_earned", (snap.game?.badges || []).map((id) => map.buildBadgeRow(this.userId, id))],
+        // Phase A — task definitions, categories, and any occurrences
+        // already generated on this device.
+        ["task_definitions", (snap.taskDefinitions || []).map((d) => map.buildTaskDefinitionRow(this.userId, d))],
+        ["categories", (snap.categoryDefs || []).map((c) => map.buildCategoryRow(this.userId, c))],
+        ["task_occurrences", Object.values(snap.occurrences || {}).map((o) => map.buildOccurrenceRow(this.userId, o))],
       ];
 
       for (const [table, payload] of batches) {

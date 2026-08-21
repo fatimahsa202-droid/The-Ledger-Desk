@@ -86,6 +86,11 @@ export const STORAGE_KEYS = {
   recentTasks: "recent-tasks",
   activityLog: "activity-log",
   lastSync: "last-sync-meta",
+  // Phase A — dynamic task foundation. Purely additive: monthlyData above
+  // (and everything that reads it) is untouched by these.
+  taskDefinitions: "task-definitions",
+  categoryDefs: "category-defs",
+  occurrences: "task-occurrences",
 };
 
 export function exportAllData(snapshot) {

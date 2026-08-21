@@ -91,7 +91,70 @@ export function rowToGamification(row, badgeRows) {
 
 export function rowToSettingsPatch(row) {
   if (!row) return null;
-  return { closingDeadlineDay: row.closing_deadline_day, dailyGoalTasks: row.daily_goal_tasks };
+  return { closingDeadlineDay: row.closing_deadline_day, dailyGoalTasks: row.daily_goal_tasks, workingDays: row.working_days || undefined };
+}
+
+/* --------------------------------------------------- Phase A: pull ---- */
+
+export function rowsToTaskDefinitions(rows) {
+  return rows.map((r) => ({
+    id: r.id,
+    name: r.name,
+    categoryId: r.category_id,
+    priority: r.priority,
+    frequency: r.frequency,
+    monthlyRule: r.monthly_rule || { kind: "none" },
+    weekdays: r.weekdays || [],
+    everyNWeeks: r.every_n_weeks || 1,
+    yearlyRule: r.yearly_rule || { month: 0, day: 1 },
+    customRule: r.custom_rule || { everyN: 1, unit: "days" },
+    dueDate: ms(r.due_date),
+    notes: r.notes || "",
+    timerEligible: r.timer_eligible,
+    isBuiltIn: r.is_built_in,
+    legacyMonthlyStorage: r.legacy_monthly_storage,
+    graduatedFrom: ms(r.graduated_from),
+    archived: r.archived,
+    createdAt: ms(r.created_at) || 0,
+    updatedAt: ms(r.updated_at) || 0,
+  }));
+}
+
+export function rowsToCategories(rows) {
+  return rows.map((r) => ({
+    id: r.id,
+    name: r.name,
+    icon: r.icon,
+    color: r.color,
+    order: r.order_index,
+    isBuiltIn: r.is_built_in,
+    archived: r.archived,
+  }));
+}
+
+export function rowsToOccurrences(rows) {
+  const map = {};
+  rows.forEach((r) => {
+    map[r.id] = {
+      id: r.id,
+      definitionId: r.definition_id,
+      periodKey: r.period_key,
+      name: r.name,
+      categoryId: r.category_id,
+      priority: r.priority,
+      monthlyRuleKind: r.monthly_rule_kind,
+      dueDate: ms(r.due_date),
+      status: r.status,
+      completedAt: ms(r.completed_at),
+      notes: r.notes || "",
+      timeSeconds: r.time_seconds || 0,
+      sessions: r.sessions || [],
+      sources: r.sources || [],
+      createdAt: ms(r.created_at) || 0,
+      updatedAt: ms(r.updated_at) || 0,
+    };
+  });
+  return map;
 }
 
 export function rowToPreferences(row) {
@@ -161,9 +224,72 @@ export function buildActiveTimerRow(userId, timer) {
 }
 
 export function buildSettingsRow(userId, settings) {
-  return { user_id: userId, closing_deadline_day: settings.closingDeadlineDay, daily_goal_tasks: settings.dailyGoalTasks };
+  return {
+    user_id: userId,
+    closing_deadline_day: settings.closingDeadlineDay,
+    daily_goal_tasks: settings.dailyGoalTasks,
+    working_days: settings.workingDays || [0, 1, 2, 3, 4],
+  };
 }
 
 export function buildPreferencesRow(userId, prefs) {
   return { user_id: userId, favorites: prefs.favorites || [], pinned: prefs.pinned || [], recent_tasks: prefs.recentTasks || [] };
+}
+
+/* --------------------------------------------------- Phase A: push ---- */
+
+export function buildTaskDefinitionRow(userId, def) {
+  return {
+    id: def.id,
+    user_id: userId,
+    name: def.name,
+    category_id: def.categoryId,
+    priority: def.priority,
+    frequency: def.frequency,
+    monthly_rule: def.monthlyRule || null,
+    weekdays: def.weekdays || [],
+    every_n_weeks: def.everyNWeeks || 1,
+    yearly_rule: def.yearlyRule || null,
+    custom_rule: def.customRule || null,
+    due_date: iso(def.dueDate),
+    notes: def.notes || "",
+    timer_eligible: def.timerEligible !== false,
+    is_built_in: !!def.isBuiltIn,
+    legacy_monthly_storage: !!def.legacyMonthlyStorage,
+    graduated_from: iso(def.graduatedFrom),
+    archived: !!def.archived,
+  };
+}
+
+export function buildCategoryRow(userId, cat) {
+  return {
+    id: cat.id,
+    user_id: userId,
+    name: cat.name,
+    icon: cat.icon || null,
+    color: cat.color || null,
+    order_index: cat.order ?? 0,
+    is_built_in: !!cat.isBuiltIn,
+    archived: !!cat.archived,
+  };
+}
+
+export function buildOccurrenceRow(userId, occ) {
+  return {
+    id: occ.id,
+    user_id: userId,
+    definition_id: occ.definitionId,
+    period_key: occ.periodKey,
+    name: occ.name,
+    category_id: occ.categoryId,
+    priority: occ.priority,
+    monthly_rule_kind: occ.monthlyRuleKind || null,
+    due_date: iso(occ.dueDate),
+    status: occ.status,
+    completed_at: iso(occ.completedAt),
+    notes: occ.notes || "",
+    time_seconds: occ.timeSeconds || 0,
+    sessions: occ.sessions || [],
+    sources: occ.sources || [],
+  };
 }

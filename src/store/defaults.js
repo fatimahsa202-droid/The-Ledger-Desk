@@ -1,3 +1,6 @@
+import { buildDefaultTaskDefinitions, buildDefaultCategoryDefs } from "../data/taskDefinitions.js";
+import { DEFAULT_WORKING_DAYS } from "../lib/recurrence.js";
+
 export const DEFAULT_GAME = {
   xp: 0,
   streak: 0,
@@ -19,7 +22,19 @@ export const DEFAULT_SETTINGS = {
   closingDeadlineDay: 5,
   dailyGoalTasks: 3,
   reduceMotion: false,
+  // Business rule, not a device preference — syncs like closingDeadlineDay.
+  // Default for this deployment: Sunday-Thursday working, Friday-Saturday
+  // weekend. Configurable in Settings; the recurrence engine has no
+  // hard-coded weekend anywhere and only ever reads this array.
+  workingDays: DEFAULT_WORKING_DAYS,
 };
+
+// Seeded once as the initial value for the taskDefinitions/categoryDefs
+// stored state (see AppDataProvider.jsx) — the original 53 tasks / 13
+// categories, now as editable records instead of frozen constants. See
+// data/taskDefinitions.js for why this requires no separate migration step.
+export const DEFAULT_TASK_DEFINITIONS = buildDefaultTaskDefinitions();
+export const DEFAULT_CATEGORY_DEFS = buildDefaultCategoryDefs();
 
 export const ACCENT_UNLOCKS = {
   classic: { label: "Classic Blue", requires: null },

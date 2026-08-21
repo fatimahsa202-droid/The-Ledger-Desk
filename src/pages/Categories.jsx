@@ -1,8 +1,9 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useMemo } from "react";
 import { Icon } from "../lib/Icon.jsx";
 import { Card } from "../components/primitives.jsx";
 import { CategoryNav } from "../components/CategoryNav.jsx";
 import { TaskDetailPanel } from "../components/TaskDetailPanel.jsx";
+import { ManageTasks } from "../components/ManageTasks.jsx";
 import { BarChart } from "../components/charts.jsx";
 import { CATEGORIES, ALL_TASKS, TASK_BY_ID } from "../data/categories.js";
 import { MONTHS, CURRENT_MONTH_KEY, formatHours, getEntry } from "../lib/format.js";
@@ -10,7 +11,7 @@ import { useAppData } from "../store/AppDataProvider.jsx";
 import { computeCategoryStatsForMonth } from "../lib/selectors.js";
 
 export function Categories({ initialTaskId }) {
-  const { monthlyData, monthStats } = useAppData();
+  const { monthlyData, monthStats, effectiveCategories } = useAppData();
   const [subTab, setSubTab] = useState("board");
   const [selectedMonth, setSelectedMonth] = useState(CURRENT_MONTH_KEY);
   const [progressMonth, setProgressMonth] = useState(CURRENT_MONTH_KEY);
@@ -32,7 +33,14 @@ export function Categories({ initialTaskId }) {
       return next;
     });
 
-  const selectedTask = TASK_BY_ID[selectedTaskId];
+  // Sourced from the editable definitions layer (not the frozen constant)
+  // so a rename/re-category shows up immediately here — the same lookup
+  // effectiveCategories already builds for the nav (see CategoryNav.jsx).
+  const effectiveTaskById = useMemo(
+    () => Object.fromEntries(effectiveCategories.flatMap((c) => c.tasks).map((t) => [t.id, t])),
+    [effectiveCategories]
+  );
+  const selectedTask = effectiveTaskById[selectedTaskId];
   const categoryStatsForMonth = computeCategoryStatsForMonth(monthlyData, progressMonth);
 
   return (
@@ -48,6 +56,7 @@ export function Categories({ initialTaskId }) {
       <div className="tabs mb-5">
         <button className={`tab-btn ${subTab === "board" ? "active" : ""}`} onClick={() => setSubTab("board")}>Task Board</button>
         <button className={`tab-btn ${subTab === "progress" ? "active" : ""}`} onClick={() => setSubTab("progress")}>Monthly Progress</button>
+        <button className={`tab-btn ${subTab === "manage" ? "active" : ""}`} onClick={() => setSubTab("manage")}>Manage</button>
       </div>
 
       {subTab === "board" && (
@@ -128,6 +137,8 @@ export function Categories({ initialTaskId }) {
           </Card>
         </div>
       )}
+
+      {subTab === "manage" && <ManageTasks />}
     </div>
   );
 }

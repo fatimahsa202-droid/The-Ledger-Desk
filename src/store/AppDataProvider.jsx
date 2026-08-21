@@ -5,8 +5,10 @@ import { useStoredState } from "../hooks/useStoredState.js";
 import { MONTHS, CURRENT_MONTH_KEY, getEntry, uid, isoWeekKey, dayKey } from "../lib/format.js";
 import { levelInfo, levelTitle, BADGES, XP_RULES } from "../lib/gamification.js";
 import { todaysChallenge } from "../lib/dailyChallenges.js";
-import { DEFAULT_GAME, DEFAULT_MIGRATION, DEFAULT_SETTINGS } from "./defaults.js";
+import { DEFAULT_GAME, DEFAULT_MIGRATION, DEFAULT_SETTINGS, DEFAULT_TASK_DEFINITIONS, DEFAULT_CATEGORY_DEFS } from "./defaults.js";
 import { cloudSync } from "../lib/cloud/CloudSyncEngine.js";
+import { buildEffectiveCategories, definitionSafeToDelete, categorySafeToDelete } from "../data/taskDefinitions.js";
+import { ensureOccurrences, findRecalculableBusinessDayOccurrences, recalculateBusinessDayOccurrences } from "../lib/occurrenceEngine.js";
 import {
   computeMonthStats,
   computeCategoryStatsForMonth,
@@ -42,8 +44,11 @@ export function AppDataProvider({ children }) {
   const [pinned, setPinned, l7] = useStoredState(STORAGE_KEYS.pinned, []);
   const [recentTaskIds, setRecentTaskIds, l8] = useStoredState(STORAGE_KEYS.recentTasks, []);
   const [activityLog, setActivityLog, l9] = useStoredState(STORAGE_KEYS.activityLog, []);
+  const [taskDefinitions, setTaskDefinitions, l10] = useStoredState(STORAGE_KEYS.taskDefinitions, DEFAULT_TASK_DEFINITIONS);
+  const [categoryDefs, setCategoryDefs, l11] = useStoredState(STORAGE_KEYS.categoryDefs, DEFAULT_CATEGORY_DEFS);
+  const [occurrences, setOccurrences, l12] = useStoredState(STORAGE_KEYS.occurrences, {});
 
-  const loaded = l1 && l2 && l3 && l4 && l5 && l6 && l7 && l8 && l9;
+  const loaded = l1 && l2 && l3 && l4 && l5 && l6 && l7 && l8 && l9 && l10 && l11 && l12;
 
   const [tick, setTick] = useState(0);
   const [toasts, setToasts] = useState([]);
@@ -60,7 +65,10 @@ export function AppDataProvider({ children }) {
    */
   const remoteEchoRef = useRef({});
   const snapshotRef = useRef();
-  snapshotRef.current = { monthlyData, migration, game, settings, favorites, pinned, recentTaskIds, activityLog, activeTimer };
+  snapshotRef.current = {
+    monthlyData, migration, game, settings, favorites, pinned, recentTaskIds, activityLog, activeTimer,
+    taskDefinitions, categoryDefs, occurrences,
+  };
 
   useEffect(() => {
     cloudSync.registerHandlers({
@@ -82,7 +90,7 @@ export function AppDataProvider({ children }) {
         setSettings: (updater) => {
           setSettings((prev) => {
             const next = typeof updater === "function" ? updater(prev) : { ...prev, ...updater };
-            remoteEchoRef.current.settingsSynced = JSON.stringify({ closingDeadlineDay: next.closingDeadlineDay, dailyGoalTasks: next.dailyGoalTasks });
+            remoteEchoRef.current.settingsSynced = JSON.stringify({ closingDeadlineDay: next.closingDeadlineDay, dailyGoalTasks: next.dailyGoalTasks, workingDays: next.workingDays });
             return next;
           });
         },
@@ -101,6 +109,18 @@ export function AppDataProvider({ children }) {
         adoptRemoteActiveTimer: (timer) => {
           remoteEchoRef.current.activeTimer = JSON.stringify(timer);
           setActiveTimer(timer);
+        },
+        setTaskDefinitions: (arr) => {
+          remoteEchoRef.current.taskDefinitions = JSON.stringify(arr);
+          setTaskDefinitions(arr);
+        },
+        setCategoryDefs: (arr) => {
+          remoteEchoRef.current.categoryDefs = JSON.stringify(arr);
+          setCategoryDefs(arr);
+        },
+        setOccurrences: (obj) => {
+          remoteEchoRef.current.occurrences = JSON.stringify(obj);
+          setOccurrences(obj);
         },
       },
     });
@@ -124,11 +144,11 @@ export function AppDataProvider({ children }) {
 
   useEffect(() => {
     if (!loaded) return;
-    const json = JSON.stringify({ closingDeadlineDay: settings.closingDeadlineDay, dailyGoalTasks: settings.dailyGoalTasks });
+    const json = JSON.stringify({ closingDeadlineDay: settings.closingDeadlineDay, dailyGoalTasks: settings.dailyGoalTasks, workingDays: settings.workingDays });
     if (remoteEchoRef.current.settingsSynced === json) return;
     cloudSync.pushSettings(settings);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [settings.closingDeadlineDay, settings.dailyGoalTasks, loaded]);
+  }, [settings.closingDeadlineDay, settings.dailyGoalTasks, settings.workingDays, loaded]);
 
   useEffect(() => {
     if (!loaded) return;
@@ -169,6 +189,232 @@ export function AppDataProvider({ children }) {
       cloudSync.pushActivityLogEntry(full);
     },
     [setActivityLog]
+  );
+
+  /* ==================================================================
+   * Phase A — Task Definitions, Categories, Occurrences.
+   * Purely additive: monthlyData and every mutator above this block are
+   * completely untouched. See src/data/taskDefinitions.js and
+   * src/lib/occurrenceEngine.js for the underlying model.
+   * ================================================================== */
+
+  const effectiveCategories = useMemo(
+    () => buildEffectiveCategories(categoryDefs, taskDefinitions),
+    [categoryDefs, taskDefinitions]
+  );
+
+  // Idempotent occurrence generation — safe to run on every load and
+  // whenever definitions or the working-days rule change. Never touches
+  // legacy (original 53) definitions; those keep working through
+  // monthlyData exactly as today.
+  useEffect(() => {
+    if (!loaded) return;
+    const { occurrences: merged, added } = ensureOccurrences({
+      taskDefinitions,
+      occurrences,
+      now: new Date(),
+      workingDays: settings.workingDays || DEFAULT_SETTINGS.workingDays,
+    });
+    if (added.length > 0) {
+      added.forEach((o) => cloudSync.pushOccurrence(o));
+      setOccurrences(merged);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loaded, taskDefinitions, settings.workingDays]);
+
+  const addTaskDefinition = useCallback(
+    (input) => {
+      const id = uid();
+      const def = {
+        id,
+        name: (input.name || "").trim(),
+        categoryId: input.categoryId,
+        priority: input.priority || "normal",
+        frequency: input.frequency || "monthly",
+        monthlyRule: input.monthlyRule || { kind: "none" },
+        weekdays: input.weekdays || [],
+        everyNWeeks: input.everyNWeeks || 1,
+        yearlyRule: input.yearlyRule || { month: 0, day: 1 },
+        customRule: input.customRule || { everyN: 1, unit: "days" },
+        dueDate: input.dueDate || null,
+        notes: input.notes || "",
+        timerEligible: input.timerEligible !== false,
+        isBuiltIn: false,
+        legacyMonthlyStorage: false,
+        archived: false,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      };
+      setTaskDefinitions((prev) => [...prev, def]);
+      cloudSync.pushTaskDefinition(def);
+      logActivity({ type: "task-def-add", message: `Added task "${def.name}"` });
+      return id;
+    },
+    [setTaskDefinitions, logActivity]
+  );
+
+  const updateTaskDefinition = useCallback(
+    (id, patch) => {
+      setTaskDefinitions((prev) => {
+        const next = prev.map((d) => (d.id === id ? { ...d, ...patch, updatedAt: Date.now() } : d));
+        const updated = next.find((d) => d.id === id);
+        if (updated) cloudSync.pushTaskDefinition(updated);
+        return next;
+      });
+    },
+    [setTaskDefinitions]
+  );
+
+  const archiveTaskDefinition = useCallback(
+    (id, archived = true) => {
+      const def = taskDefinitions.find((d) => d.id === id);
+      updateTaskDefinition(id, { archived });
+      logActivity({ type: "task-def-archive", message: `${archived ? "Archived" : "Reactivated"} task "${def?.name || ""}"` });
+    },
+    [taskDefinitions, updateTaskDefinition, logActivity]
+  );
+
+  const deleteTaskDefinition = useCallback(
+    (id) => {
+      const def = taskDefinitions.find((d) => d.id === id);
+      if (!def) return { ok: false, error: "Not found." };
+      if (!definitionSafeToDelete(def, monthlyData, occurrences)) {
+        return { ok: false, error: "This task has history — archive it instead of deleting." };
+      }
+      setTaskDefinitions((prev) => prev.filter((d) => d.id !== id));
+      cloudSync.deleteTaskDefinition(id);
+      return { ok: true };
+    },
+    [taskDefinitions, monthlyData, occurrences, setTaskDefinitions]
+  );
+
+  const addCategory = useCallback(
+    (input) => {
+      const id = uid();
+      const cat = {
+        id,
+        name: (input.name || "").trim(),
+        icon: input.icon || "layers",
+        color: input.color || null,
+        order: categoryDefs.length,
+        isBuiltIn: false,
+        archived: false,
+      };
+      setCategoryDefs((prev) => [...prev, cat]);
+      cloudSync.pushCategory(cat);
+      logActivity({ type: "category-add", message: `Added category "${cat.name}"` });
+      return id;
+    },
+    [categoryDefs, setCategoryDefs, logActivity]
+  );
+
+  const updateCategory = useCallback(
+    (id, patch) => {
+      setCategoryDefs((prev) => {
+        const next = prev.map((c) => (c.id === id ? { ...c, ...patch } : c));
+        const updated = next.find((c) => c.id === id);
+        if (updated) cloudSync.pushCategory(updated);
+        return next;
+      });
+    },
+    [setCategoryDefs]
+  );
+
+  const archiveCategory = useCallback(
+    (id, archived = true) => {
+      updateCategory(id, { archived });
+    },
+    [updateCategory]
+  );
+
+  const deleteCategory = useCallback(
+    (id) => {
+      if (!categorySafeToDelete(id, taskDefinitions)) {
+        return { ok: false, error: "This category has tasks assigned (now or historically) — archive it instead of deleting." };
+      }
+      setCategoryDefs((prev) => prev.filter((c) => c.id !== id));
+      cloudSync.deleteCategory(id);
+      return { ok: true };
+    },
+    [taskDefinitions, setCategoryDefs]
+  );
+
+  const reorderCategory = useCallback(
+    (id, direction) => {
+      setCategoryDefs((prev) => {
+        const sorted = [...prev].sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+        const idx = sorted.findIndex((c) => c.id === id);
+        const swapIdx = idx + direction;
+        if (idx < 0 || swapIdx < 0 || swapIdx >= sorted.length) return prev;
+        const a = sorted[idx], b = sorted[swapIdx];
+        const aOrder = a.order ?? 0, bOrder = b.order ?? 0;
+        const next = prev.map((c) => (c.id === a.id ? { ...c, order: bOrder } : c.id === b.id ? { ...c, order: aOrder } : c));
+        cloudSync.pushCategory(next.find((c) => c.id === a.id));
+        cloudSync.pushCategory(next.find((c) => c.id === b.id));
+        return next;
+      });
+    },
+    [setCategoryDefs]
+  );
+
+  const setOccurrenceStatus = useCallback(
+    (occId, status) => {
+      setOccurrences((prev) => {
+        const o = prev[occId];
+        if (!o) return prev;
+        const next = { ...o, status, completedAt: status === "done" ? Date.now() : null, updatedAt: Date.now() };
+        cloudSync.pushOccurrence(next);
+        return { ...prev, [occId]: next };
+      });
+    },
+    [setOccurrences]
+  );
+
+  const updateOccurrenceNotes = useCallback(
+    (occId, notes) => {
+      setOccurrences((prev) => {
+        const o = prev[occId];
+        if (!o) return prev;
+        const next = { ...o, notes, updatedAt: Date.now() };
+        cloudSync.pushOccurrence(next);
+        return { ...prev, [occId]: next };
+      });
+    },
+    [setOccurrences]
+  );
+
+  // Graduates a legacy (original 53) task onto the new recurrence engine as
+  // of a user-chosen date. Never touches monthlyData — everything before
+  // graduatedFrom stays exactly as it is, forever; the occurrence engine
+  // (see its useEffect above) only ever generates occurrences on/after it.
+  const graduateTaskDefinition = useCallback(
+    (id, { graduatedFrom, ...recurrencePatch }) => {
+      updateTaskDefinition(id, { ...recurrencePatch, graduatedFrom });
+      const def = taskDefinitions.find((d) => d.id === id);
+      logActivity({ type: "task-def-graduate", message: `Moved "${def?.name || ""}" onto the new recurrence system, starting ${new Date(graduatedFrom).toLocaleDateString()}` });
+    },
+    [taskDefinitions, updateTaskDefinition, logActivity]
+  );
+
+  // Working Days change: recalculation is always an explicit, separate
+  // opt-in — changing the setting alone never moves an existing occurrence.
+  const recalculableBusinessDayOccurrences = useCallback(
+    () => findRecalculableBusinessDayOccurrences(occurrences, new Date()),
+    [occurrences]
+  );
+
+  const applyWorkingDaysChange = useCallback(
+    (newWorkingDays, { recalcUpcoming = false } = {}) => {
+      if (recalcUpcoming) {
+        const candidates = findRecalculableBusinessDayOccurrences(occurrences, new Date());
+        const updates = recalculateBusinessDayOccurrences(candidates, taskDefinitions, newWorkingDays);
+        Object.values(updates).forEach((o) => cloudSync.pushOccurrence(o));
+        setOccurrences((prev) => ({ ...prev, ...updates }));
+      }
+      setSettings((prev) => ({ ...prev, workingDays: newWorkingDays }));
+      logActivity({ type: "working-days", message: "Updated Working Days configuration" });
+    },
+    [occurrences, taskDefinitions, setOccurrences, setSettings, logActivity]
   );
 
   /* ---------------- daily + weekly + monthly streak ---------------- */
@@ -581,6 +827,12 @@ export function AppDataProvider({ children }) {
     activityLog,
     toasts, pushToast, dismissToast,
     celebration, setCelebration,
+
+    taskDefinitions, categoryDefs, occurrences, effectiveCategories,
+    addTaskDefinition, updateTaskDefinition, archiveTaskDefinition, deleteTaskDefinition,
+    addCategory, updateCategory, archiveCategory, deleteCategory, reorderCategory,
+    setOccurrenceStatus, updateOccurrenceNotes, graduateTaskDefinition,
+    recalculableBusinessDayOccurrences, applyWorkingDaysChange,
 
     updateEntry, addSource, removeSource, updateMigTask,
     setStatus, setMigStatus,
