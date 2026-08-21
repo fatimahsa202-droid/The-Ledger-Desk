@@ -395,7 +395,9 @@ class CloudSyncEngine {
 
   pushTaskDefinition(def) {
     if (!this.isConnected()) return;
-    this._push("task_definitions", map.buildTaskDefinitionRow(this.userId, def), { conflictKeys: ["id"] });
+    // (user_id, id) — the built-in 53 tasks use the same id for every account,
+    // so "id" alone is not a safe global uniqueness constraint. See schema.sql.
+    this._push("task_definitions", map.buildTaskDefinitionRow(this.userId, def), { conflictKeys: ["user_id", "id"] });
   }
 
   deleteTaskDefinition(id) {
@@ -405,7 +407,8 @@ class CloudSyncEngine {
 
   pushCategory(cat) {
     if (!this.isConnected()) return;
-    this._push("categories", map.buildCategoryRow(this.userId, cat), { conflictKeys: ["id"] });
+    // (user_id, id) — same reasoning as pushTaskDefinition above.
+    this._push("categories", map.buildCategoryRow(this.userId, cat), { conflictKeys: ["user_id", "id"] });
   }
 
   deleteCategory(id) {
@@ -415,7 +418,9 @@ class CloudSyncEngine {
 
   pushOccurrence(occ) {
     if (!this.isConnected()) return;
-    this._push("task_occurrences", map.buildOccurrenceRow(this.userId, occ), { conflictKeys: ["id"] });
+    // (user_id, id) — occ.id (`${definitionId}::${periodKey}`) has no per-user
+    // salt, so it alone is not globally unique across accounts either.
+    this._push("task_occurrences", map.buildOccurrenceRow(this.userId, occ), { conflictKeys: ["user_id", "id"] });
   }
 
   async flushOutboxNow() {

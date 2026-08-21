@@ -19,6 +19,8 @@
 --    whole file once, in order, in the Supabase SQL Editor.
 -- ============================================================================
 
+begin;
+
 -- Reusable trigger: stamp updated_at with the server's clock on every UPDATE.
 create or replace function set_updated_at()
 returns trigger as $$
@@ -245,10 +247,20 @@ create trigger trg_updated_at before update on preferences_cloud
 --     (not a uuid) and legacy_monthly_storage = true, so their history keeps
 --     living in reconciliation_entries exactly as before; this table's rows
 --     for them are metadata only (name/category/priority), never occurrence
---     data.
+--     data — unless/until the user explicitly graduates one (see below).
+--
+--     Identity: the built-in 53/13 use fixed ids (e.g. "bank-charges") that
+--     are the same string for every account, and occurrence ids are
+--     likewise deterministic with no per-user salt — so, exactly like
+--     reconciliation_entries' `primary key (user_id, month_key, task_id)`,
+--     these tables are keyed by `(user_id, id)`, not `id` alone. A bare
+--     `id text primary key` would be one global uniqueness constraint that
+--     RLS does not shard, so a second account could never insert the same
+--     built-in id. See CloudSyncEngine.js's conflictKeys for the matching
+--     upsert targets.
 -- ----------------------------------------------------------------------------
 create table task_definitions (
-  id text primary key,
+  id text not null,
   user_id uuid not null references auth.users(id) on delete cascade,
   name text not null,
   category_id text not null,
@@ -271,7 +283,8 @@ create table task_definitions (
   graduated_from timestamptz,
   archived boolean not null default false,
   created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now()
+  updated_at timestamptz not null default now(),
+  primary key (user_id, id)
 );
 alter table task_definitions enable row level security;
 create policy "own rows" on task_definitions for all
@@ -284,7 +297,7 @@ create trigger trg_updated_at before update on task_definitions
 --     categories.
 -- ----------------------------------------------------------------------------
 create table categories (
-  id text primary key,
+  id text not null,
   user_id uuid not null references auth.users(id) on delete cascade,
   name text not null,
   icon text,
@@ -292,7 +305,8 @@ create table categories (
   order_index integer not null default 0,
   is_built_in boolean not null default false,
   archived boolean not null default false,
-  updated_at timestamptz not null default now()
+  updated_at timestamptz not null default now(),
+  primary key (user_id, id)
 );
 alter table categories enable row level security;
 create policy "own rows" on categories for all
@@ -301,14 +315,19 @@ create trigger trg_updated_at before update on categories
   for each row execute function set_updated_at();
 
 -- ----------------------------------------------------------------------------
--- 15. Task Occurrences (Phase A) — one row per generated occurrence, for
---     every definition EXCEPT the legacy-storage ones (those keep using
---     reconciliation_entries). id = `${definitionId}::${periodKey}`,
---     deterministic, so re-running generation from any device is always a
---     safe no-op upsert — never a duplicate.
+-- 15. Task Occurrences (Phase A) — one row per generated occurrence: for
+--     every non-legacy (new) task definition from day one, and for a
+--     graduated legacy definition (graduated_from set), one row per period
+--     on/after that date. Periods before graduated_from — and every legacy
+--     definition never graduated — have no rows here; that history lives
+--     in reconciliation_entries exactly as before. id =
+--     `${definitionId}::${periodKey}`, deterministic within one account,
+--     so re-running generation from any device is always a safe no-op
+--     upsert — never a duplicate — and (user_id, id) together is what
+--     makes it safe across accounts too.
 -- ----------------------------------------------------------------------------
 create table task_occurrences (
-  id text primary key,
+  id text not null,
   user_id uuid not null references auth.users(id) on delete cascade,
   definition_id text not null,
   period_key text not null,
@@ -327,7 +346,8 @@ create table task_occurrences (
   sessions jsonb not null default '[]'::jsonb,
   sources jsonb not null default '[]'::jsonb,
   created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now()
+  updated_at timestamptz not null default now(),
+  primary key (user_id, id)
 );
 alter table task_occurrences enable row level security;
 create policy "own rows" on task_occurrences for all
@@ -373,3 +393,5 @@ alter publication supabase_realtime add table
   task_definitions,
   categories,
   task_occurrences;
+
+commit;
