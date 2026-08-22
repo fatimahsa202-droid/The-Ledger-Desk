@@ -8,8 +8,8 @@ import { AddSourceForm } from "./AddSourceForm.jsx";
 import { NotesField } from "./NotesField.jsx";
 import { ReconciledStamp } from "./ReconciledStamp.jsx";
 import { STATUS_META } from "../data/categories.js";
-import { MONTHS } from "../lib/format.js";
 import { isOccurrenceDrivenForMonth, occurrencesForTaskInMonth, computeBoardRollup } from "../lib/occurrenceEngine.js";
+import { monthKeyLabel } from "../lib/monthNav.js";
 import { useAppData } from "../store/AppDataProvider.jsx";
 
 const dateLabel = (ts) => (ts ? new Date(ts).toLocaleDateString(undefined, { weekday: "short", day: "2-digit", month: "short" }) : null);
@@ -54,7 +54,7 @@ function OccurrenceDrivenDetailPanel({ task, monthKey }) {
   const { occurrences, setOccurrenceStatus, updateOccurrenceNotes, isTaskFavorite, isTaskPinned, toggleFavorite, togglePinned } = useAppData();
   const occs = useMemo(() => occurrencesForTaskInMonth(occurrences, task.id, monthKey), [occurrences, task.id, monthKey]);
   const rollup = useMemo(() => computeBoardRollup(occs), [occs]);
-  const monthLabel = MONTHS.find((m) => m.key === monthKey)?.full || monthKey;
+  const monthLabel = monthKeyLabel(monthKey);
   const percent = rollup.total ? Math.round((rollup.done / rollup.total) * 100) : 0;
 
   return (
@@ -118,7 +118,7 @@ function LegacyDetailPanel({ task, monthKey }) {
 
   const entry = { status: "pending", timeSeconds: 0, sessions: [], sources: [], notes: "", ...((monthlyData[monthKey] || {})[task.id]) };
   const running = activeTimer && activeTimer.kind === "recon" && activeTimer.taskId === task.id && activeTimer.monthKey === monthKey;
-  const monthLabel = MONTHS.find((m) => m.key === monthKey)?.full || monthKey;
+  const monthLabel = monthKeyLabel(monthKey);
 
   return (
     <Card className="flex-1" hover={false}>

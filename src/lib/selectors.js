@@ -1,25 +1,35 @@
 import { ALL_TASKS, CATEGORIES, TASK_BY_ID } from "../data/categories.js";
 import { MONTHS, getEntry, dayKey, isoWeekKey } from "./format.js";
 
-/** Per-month completion + time totals, live-timer-aware. */
+/**
+ * Completion + time totals for one arbitrary month key, live-timer-aware.
+ * Works for any "YYYY-MM" key, not just one of the fixed MONTHS list — this
+ * is what lets the Task Board navigate to a month outside that list (see
+ * monthNav.js) without needing its own separate stats model.
+ */
+export function computeStatsForMonthKey(monthlyData, monthKey, activeTimer, now) {
+  let completed = 0, seconds = 0;
+  ALL_TASKS.forEach((t) => {
+    const e = getEntry(monthlyData, monthKey, t.id);
+    if (e.status === "done") completed++;
+    seconds += e.timeSeconds;
+    if (activeTimer && activeTimer.kind === "recon" && activeTimer.taskId === t.id && activeTimer.monthKey === monthKey) {
+      seconds += Math.floor((now - activeTimer.startedAt) / 1000);
+    }
+  });
+  return {
+    completed,
+    total: ALL_TASKS.length,
+    seconds,
+    percent: ALL_TASKS.length ? Math.round((completed / ALL_TASKS.length) * 100) : 0,
+  };
+}
+
+/** Per-month completion + time totals, live-timer-aware, for the fixed year-to-date MONTHS list. */
 export function computeMonthStats(monthlyData, activeTimer, now) {
   const map = {};
   MONTHS.forEach((m) => {
-    let completed = 0, seconds = 0;
-    ALL_TASKS.forEach((t) => {
-      const e = getEntry(monthlyData, m.key, t.id);
-      if (e.status === "done") completed++;
-      seconds += e.timeSeconds;
-      if (activeTimer && activeTimer.kind === "recon" && activeTimer.taskId === t.id && activeTimer.monthKey === m.key) {
-        seconds += Math.floor((now - activeTimer.startedAt) / 1000);
-      }
-    });
-    map[m.key] = {
-      completed,
-      total: ALL_TASKS.length,
-      seconds,
-      percent: Math.round((completed / ALL_TASKS.length) * 100),
-    };
+    map[m.key] = computeStatsForMonthKey(monthlyData, m.key, activeTimer, now);
   });
   return map;
 }

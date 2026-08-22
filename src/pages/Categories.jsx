@@ -8,11 +8,16 @@ import { BarChart } from "../components/charts.jsx";
 import { CATEGORIES, ALL_TASKS, TASK_BY_ID } from "../data/categories.js";
 import { MONTHS, CURRENT_MONTH_KEY, formatHours, getEntry } from "../lib/format.js";
 import { useAppData } from "../store/AppDataProvider.jsx";
-import { computeCategoryStatsForMonth } from "../lib/selectors.js";
+import { computeCategoryStatsForMonth, computeStatsForMonthKey } from "../lib/selectors.js";
+import { shiftMonthKey, monthKeyLabel, monthKeyPeriodType } from "../lib/monthNav.js";
 
 export function Categories({ initialTaskId }) {
-  const { monthlyData, monthStats, effectiveCategories } = useAppData();
+  const { monthlyData, monthStats, activeTimer, effectiveCategories } = useAppData();
   const [subTab, setSubTab] = useState("board");
+  // Task Board period — independent of the shared, year-to-date MONTHS list
+  // used everywhere else (Monthly Progress below, Dashboard, Analytics,
+  // Reports, gamification). Free navigation, no past/future limit — see
+  // src/lib/monthNav.js.
   const [selectedMonth, setSelectedMonth] = useState(CURRENT_MONTH_KEY);
   const [progressMonth, setProgressMonth] = useState(CURRENT_MONTH_KEY);
   const [expandedCats, setExpandedCats] = useState(() => new Set([TASK_BY_ID[initialTaskId]?.categoryId || CATEGORIES[0].id]));
@@ -43,6 +48,12 @@ export function Categories({ initialTaskId }) {
   const selectedTask = effectiveTaskById[selectedTaskId];
   const categoryStatsForMonth = computeCategoryStatsForMonth(monthlyData, progressMonth);
 
+  const selectedMonthStats = useMemo(
+    () => computeStatsForMonthKey(monthlyData, selectedMonth, activeTimer, Date.now()),
+    [monthlyData, selectedMonth, activeTimer]
+  );
+  const selectedPeriodType = monthKeyPeriodType(selectedMonth, CURRENT_MONTH_KEY);
+
   return (
     <div>
       <div className="page-header">
@@ -61,22 +72,26 @@ export function Categories({ initialTaskId }) {
 
       {subTab === "board" && (
         <div>
-          <div className="flex gap-2 flex-wrap mb-5">
-            {MONTHS.map((m) => (
-              <button
-                key={m.key}
-                onClick={() => setSelectedMonth(m.key)}
-                className="tag-chip mono"
-                style={selectedMonth === m.key ? { background: "linear-gradient(120deg,var(--accent-1),var(--accent-2))", color: "#fff", borderColor: "transparent" } : undefined}
-              >
-                {m.label} '{String(m.year).slice(2)}
+          <div className="flex items-center gap-3 flex-wrap mb-5">
+            <div className="flex items-center gap-2" style={{ background: "var(--bg-soft)", border: "1px solid var(--border)", borderRadius: 10, padding: "6px 8px" }}>
+              <button className="btn btn-ghost btn-icon" aria-label="Previous month" onClick={() => setSelectedMonth((m) => shiftMonthKey(m, -1))}>
+                <Icon name="chevron-left" size={16} />
               </button>
-            ))}
+              <span className="text-sm fw-semibold mono" style={{ minWidth: 150, textAlign: "center" }}>{monthKeyLabel(selectedMonth)}</span>
+              <button className="btn btn-ghost btn-icon" aria-label="Next month" onClick={() => setSelectedMonth((m) => shiftMonthKey(m, 1))}>
+                <Icon name="chevron-right" size={16} />
+              </button>
+            </div>
+            {selectedMonth !== CURRENT_MONTH_KEY && (
+              <button className="btn btn-secondary btn-sm" onClick={() => setSelectedMonth(CURRENT_MONTH_KEY)}>Current Period</button>
+            )}
+            {selectedPeriodType === "past" && <span className="pill pill-outline">Historical</span>}
+            {selectedPeriodType === "future" && <span className="pill pill-outline">Upcoming — scheduled workload</span>}
           </div>
 
           <div className="flex gap-3 flex-wrap mb-5">
-            <div className="pill pill-outline">Completed this month: <span className="mono fw-bold" style={{ marginLeft: 4 }}>{monthStats[selectedMonth].completed}/{monthStats[selectedMonth].total}</span></div>
-            <div className="pill pill-outline">Time logged: <span className="mono fw-bold" style={{ marginLeft: 4 }}>{formatHours(monthStats[selectedMonth].seconds)}</span></div>
+            <div className="pill pill-outline">Completed: <span className="mono fw-bold" style={{ marginLeft: 4 }}>{selectedMonthStats.completed}/{selectedMonthStats.total}</span></div>
+            <div className="pill pill-outline">Time logged: <span className="mono fw-bold" style={{ marginLeft: 4 }}>{formatHours(selectedMonthStats.seconds)}</span></div>
           </div>
 
           <div className="board-layout">
