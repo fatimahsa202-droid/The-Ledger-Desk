@@ -126,6 +126,36 @@ export function categorySafeToDelete(categoryId, taskDefinitions) {
 }
 
 /**
+ * Phase A cloud-migration healing. Given the set of category/task ids that
+ * already exist in Supabase for this account, returns only the built-in
+ * rows that are completely absent from that set — never one that's already
+ * there under any form (renamed, archived, re-prioritized, re-categorized,
+ * graduated). `existingIds` must reflect CLOUD state, not local state, so
+ * an id that only reached the cloud once (e.g. a single category pushed
+ * before the rest were ever uploaded) is never re-added or overwritten —
+ * see CloudSyncEngine.js's _phaseAMigrationIfNeeded, which never uploads
+ * (or even touches) a row for an id already present in `existingIds`.
+ *
+ * When a missing id also happens to exist in `localDefs` (this device's own
+ * not-yet-synced copy), that local copy is preferred over the pristine seed
+ * — so a customization made on this device before it ever reached the
+ * cloud is not silently discarded in favor of the default.
+ */
+export function missingBuiltinCategories(existingIds, localCategoryDefs) {
+  const localById = Object.fromEntries((localCategoryDefs || []).map((c) => [c.id, c]));
+  return buildDefaultCategoryDefs()
+    .filter((c) => !existingIds.has(c.id))
+    .map((c) => localById[c.id] || c);
+}
+
+export function missingBuiltinTaskDefinitions(existingIds, localTaskDefinitions) {
+  const localById = Object.fromEntries((localTaskDefinitions || []).map((d) => [d.id, d]));
+  return buildDefaultTaskDefinitions()
+    .filter((d) => !existingIds.has(d.id))
+    .map((d) => localById[d.id] || d);
+}
+
+/**
  * When a legacy task is about to be graduated (or its graduatedFrom date is
  * being changed), check whether the calendar month containing the chosen
  * cutover date — or any month after it — already has real monthlyData

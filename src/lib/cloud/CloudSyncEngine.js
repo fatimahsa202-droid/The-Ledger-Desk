@@ -4,6 +4,7 @@ import { getActiveAuthStrategy } from "./authStrategies.js";
 import { enqueue, flushOutbox, outboxCount, outboxFailedCount, loadOutbox, clearOutbox } from "./outbox.js";
 import * as map from "./schema-map.js";
 import { patch as diagPatch, logEvent, reset as diagReset, recordConflict } from "./diagnostics.js";
+import { missingBuiltinCategories, missingBuiltinTaskDefinitions } from "../../data/taskDefinitions.js";
 
 const TABLES = [
   "reconciliation_entries", "work_sessions", "sources", "migration_state", "migration_log",
@@ -34,6 +35,12 @@ class CloudSyncEngine {
     this.realtimeDebounce = null;
     this.authSub = null;
     this._reconciling = false;
+    // Whether this account's Phase A metadata (task_definitions/categories/
+    // task_occurrences) is confirmed fully migrated — see
+    // _phaseAMigrationIfNeeded. Reconcile never applies a pull for those
+    // three tables while this is false, no matter how many rows come back;
+    // a partial cloud result is never authoritative pre-migration.
+    this._phaseAMigrated = false;
   }
 
   /** AppDataProvider calls this once on mount so we can apply pulled/pushed state back into it. */
@@ -145,17 +152,18 @@ class CloudSyncEngine {
     logEvent(`Signed in as ${email || userId}.`);
 
     const migrationOk = await this._firstTimeMigrationIfNeeded();
+    const phaseAOk = await this._phaseAMigrationIfNeeded();
     await this.reconcileNow("initial connect");
     this._startRealtime();
     this._startPeriodicReconcile();
     this._attachLifecycleListeners();
     await this.flushOutboxNow();
-    if (migrationOk) {
+    if (migrationOk && phaseAOk) {
       diagPatch({ status: "synced" });
     } else {
       // Leave status as an error, even though the reconcile above may have
       // succeeded — a partial initial upload is not "synced." lastError is
-      // already set by _firstTimeMigrationIfNeeded.
+      // already set by _firstTimeMigrationIfNeeded / _phaseAMigrationIfNeeded.
       diagPatch({ status: "error" });
     }
   }
@@ -164,6 +172,7 @@ class CloudSyncEngine {
     logEvent("Signed out.");
     this._stopLoops();
     this.userId = null;
+    this._phaseAMigrated = false;
     diagPatch({ status: "disconnected", connectedEmail: null });
   }
 
@@ -281,13 +290,18 @@ class CloudSyncEngine {
         h.setFavorites(prefsBlob.favorites);
         h.setPinned(prefsBlob.pinned);
         h.setRecentTaskIds(prefsBlob.recentTasks);
-        // Phase A — only apply if the cloud actually has definitions/categories
-        // for this account; an empty result here means "not migrated yet",
-        // not "delete everything local" (the first-time migration below is
-        // what uploads the local defaults in that case).
-        if ((taskDefs.data || []).length > 0) h.setTaskDefinitions(map.rowsToTaskDefinitions(taskDefs.data));
-        if ((cats.data || []).length > 0) h.setCategoryDefs(map.rowsToCategories(cats.data));
-        h.setOccurrences(map.rowsToOccurrences(occs.data || []));
+        // Phase A — only ever apply once _phaseAMigrationIfNeeded has
+        // confirmed (via the dedicated phase_a_migrated_at marker) that this
+        // account's cloud copy is the complete, healed set. Before that,
+        // cloud may hold anywhere from 0 to a handful of rows (exactly the
+        // partial state that caused categories to disappear) — applying it
+        // would silently truncate local state to match. Once migrated,
+        // cloud is fully authoritative, including legitimate deletions.
+        if (this._phaseAMigrated) {
+          h.setTaskDefinitions(map.rowsToTaskDefinitions(taskDefs.data || []));
+          h.setCategoryDefs(map.rowsToCategories(cats.data || []));
+          h.setOccurrences(map.rowsToOccurrences(occs.data || []));
+        }
       }
 
       const now = Date.now();
@@ -524,6 +538,93 @@ class CloudSyncEngine {
     } catch (err) {
       logEvent(`First-time migration failed: ${err.message || err}. Your local data is untouched — safe to retry.`, "error");
       diagPatch({ lastError: err.message || String(err) });
+      return false;
+    }
+  }
+
+  /* ------------------------------------------------ Phase A migration ---- */
+
+  /**
+   * Ensures this account's Phase A metadata (the 13 built-in categories, 53
+   * built-in task definitions) is fully present in the cloud, exactly once,
+   * before reconcile is ever allowed to treat cloud as authoritative for
+   * those tables. Runs on every sign-in, but is a single cheap SELECT once
+   * already migrated.
+   *
+   * Root cause this exists for: an account that already had a pre-Phase-A
+   * sync_bootstrap marker skipped the original first-time upload entirely
+   * (see _firstTimeMigrationIfNeeded's early-return above), so its Phase A
+   * tables started empty and only grew one row at a time as the user
+   * happened to edit individual items — and reconcile's old guard treated
+   * any non-empty (but still partial) result as complete, truncating local
+   * state to match. This fixes both the cause (reconcile no longer trusts
+   * cloud pre-marker, see reconcileNow) and the live symptom (heals
+   * whatever is currently missing, additively).
+   *
+   * Only ids completely absent from the CLOUD set are ever touched — an id
+   * already present there (however it got there) is never re-uploaded,
+   * never overwritten, and its current cloud value is left exactly as is.
+   * Idempotent and safe if two devices run this concurrently: both compute
+   * the same missing set, both upsert it (harmless if one lands first), and
+   * the marker write is itself an upsert on sync_bootstrap's single-column
+   * primary key.
+   */
+  async _phaseAMigrationIfNeeded() {
+    if (!this.client || !this.userId) return false;
+    try {
+      const { data: marker, error: markerErr } = await this.client
+        .from("sync_bootstrap")
+        .select("phase_a_migrated_at")
+        .eq("user_id", this.userId)
+        .maybeSingle();
+      if (markerErr) throw markerErr;
+      if (marker?.phase_a_migrated_at) {
+        this._phaseAMigrated = true;
+        return true;
+      }
+
+      logEvent("Phase A metadata not yet confirmed migrated for this account — checking for anything missing.");
+
+      const [catRows, taskRows] = await Promise.all([
+        this.client.from("categories").select("id").eq("user_id", this.userId),
+        this.client.from("task_definitions").select("id").eq("user_id", this.userId),
+      ]);
+      if (catRows.error) throw catRows.error;
+      if (taskRows.error) throw taskRows.error;
+
+      const existingCatIds = new Set((catRows.data || []).map((r) => r.id));
+      const existingTaskIds = new Set((taskRows.data || []).map((r) => r.id));
+
+      const snap = this.getLocalSnapshot ? this.getLocalSnapshot() : {};
+      const catsToAdd = missingBuiltinCategories(existingCatIds, snap.categoryDefs);
+      const tasksToAdd = missingBuiltinTaskDefinitions(existingTaskIds, snap.taskDefinitions);
+
+      // Never touches an id already in existingCatIds/existingTaskIds — the
+      // built-in row that already reached the cloud (e.g. a category edited
+      // before the rest were ever uploaded) is neither re-sent nor altered.
+      if (catsToAdd.length > 0) {
+        const { error } = await this.client.from("categories").upsert(catsToAdd.map((c) => map.buildCategoryRow(this.userId, c)));
+        if (error) throw error;
+      }
+      if (tasksToAdd.length > 0) {
+        const { error } = await this.client.from("task_definitions").upsert(tasksToAdd.map((d) => map.buildTaskDefinitionRow(this.userId, d)));
+        if (error) throw error;
+      }
+
+      // Marker written last, only once the heal upload above has fully
+      // succeeded — mirrors _firstTimeMigrationIfNeeded's own ordering.
+      const { error: markerInsErr } = await this.client
+        .from("sync_bootstrap")
+        .upsert({ user_id: this.userId, phase_a_migrated_at: new Date().toISOString() });
+      if (markerInsErr) throw markerInsErr;
+
+      logEvent(`Phase A metadata migrated — added ${catsToAdd.length} missing categor${catsToAdd.length === 1 ? "y" : "ies"} and ${tasksToAdd.length} missing task definition(s); everything already in the cloud was left untouched.`);
+      this._phaseAMigrated = true;
+      return true;
+    } catch (err) {
+      logEvent(`Phase A migration check failed: ${err.message || err}. Will retry on next sign-in/reconcile — nothing local or remote was changed.`, "error");
+      diagPatch({ lastError: err.message || String(err) });
+      this._phaseAMigrated = false;
       return false;
     }
   }

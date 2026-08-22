@@ -1,10 +1,9 @@
-import React, { useState, useMemo } from "react";
+import React, { useState, useMemo, useRef, useEffect } from "react";
 import { Icon } from "../lib/Icon.jsx";
-import { Card, Pill } from "./primitives.jsx";
+import { Card, Pill, IconButton } from "./primitives.jsx";
 import { useAppData } from "../store/AppDataProvider.jsx";
 import { PRIORITIES, PRIORITY_META, FREQUENCIES, FREQUENCY_LABELS, definitionSafeToDelete, graduationOverlapWarning } from "../data/taskDefinitions.js";
-import { WEEKDAY_LABELS, MONTHLY_RULE_LABELS } from "../lib/recurrence.js";
-import { relativeTime } from "../lib/format.js";
+import { WEEKDAY_LABELS, MONTHLY_RULE_LABELS, generateInstances, DEFAULT_WORKING_DAYS } from "../lib/recurrence.js";
 
 const MONTH_NAMES = ["January","February","March","April","May","June","July","August","September","October","November","December"];
 
@@ -14,9 +13,97 @@ function toDateInputValue(ts) {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
 
+function formatShortDate(ts) {
+  return new Date(ts).toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
+}
+
+/** A short, human line describing a task's cadence for compact rows — e.g. "Weekly · Sun, Wed", "Monthly", "BD+2 after month-end". */
+function scheduleLine(def) {
+  if (def.legacyMonthlyStorage && !def.graduatedFrom) return "Monthly";
+  if (def.frequency === "weekly") {
+    const days = (def.weekdays || []).map((i) => WEEKDAY_LABELS[i]);
+    return days.length ? `Weekly · ${days.join(", ")}` : "Weekly";
+  }
+  if (def.frequency === "monthly") {
+    const kind = def.monthlyRule?.kind || "none";
+    if (kind === "none") return "Monthly";
+    if (kind === "specificDay") return `Monthly · Day ${def.monthlyRule.day || 1}`;
+    if (kind === "lastDay") return "Monthly · Last day";
+    if (kind === "firstBusinessDay") return "Monthly · First business day";
+    if (kind === "lastBusinessDay") return "Monthly · Last business day";
+    if (kind === "bdAfterMonthEnd") return `Monthly · BD+${def.monthlyRule.count || 1}`;
+    return "Monthly";
+  }
+  if (def.frequency === "yearly") {
+    const { month = 0, day = 1 } = def.yearlyRule || {};
+    return `Yearly · ${MONTH_NAMES[month]} ${day}`;
+  }
+  if (def.frequency === "once") return "One-time";
+  if (def.frequency === "custom") {
+    const { everyN = 1, unit = "days" } = def.customRule || {};
+    return `Every ${everyN} ${unit}`;
+  }
+  return FREQUENCY_LABELS[def.frequency] || "";
+}
+
+/* ---------------------------------------------------------- Overflow menu */
+
+function OverflowMenu({ items }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDocClick = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
+    const onEsc = (e) => { if (e.key === "Escape") setOpen(false); };
+    document.addEventListener("mousedown", onDocClick);
+    document.addEventListener("keydown", onEsc);
+    return () => {
+      document.removeEventListener("mousedown", onDocClick);
+      document.removeEventListener("keydown", onEsc);
+    };
+  }, [open]);
+
+  return (
+    <div ref={ref} className="relative" style={{ display: "inline-block" }}>
+      <IconButton name="ellipsis" label="More actions" onClick={() => setOpen((o) => !o)} />
+      {open && (
+        <div
+          role="menu"
+          style={{
+            position: "absolute", right: 0, top: "calc(100% + 4px)", minWidth: 170, zIndex: 30,
+            background: "var(--panel)", border: "1px solid var(--border-strong)", borderRadius: 10,
+            boxShadow: "var(--shadow-lg)", overflow: "hidden", padding: 4,
+          }}
+        >
+          {items.filter((it) => !it.hidden).map((it, i) => (
+            <button
+              key={i}
+              role="menuitem"
+              disabled={it.disabled}
+              data-tip={it.tip}
+              onClick={() => { setOpen(false); it.onClick(); }}
+              className="text-sm"
+              style={{
+                display: "block", width: "100%", textAlign: "left", padding: "8px 10px", background: "none",
+                border: "none", borderRadius: 6, color: it.danger ? "var(--rust)" : "var(--ink)",
+                cursor: it.disabled ? "not-allowed" : "pointer", opacity: it.disabled ? 0.45 : 1,
+              }}
+              onMouseEnter={(e) => !it.disabled && (e.currentTarget.style.background = "var(--panel-hover)")}
+              onMouseLeave={(e) => (e.currentTarget.style.background = "none")}
+            >
+              {it.label}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 /* ------------------------------------------------------------- Categories */
 
-function CategoryRow({ cat, onSave, onArchive, onDelete, onReorder, safeToDelete, isFirst, isLast }) {
+function CategoryRow({ cat, activeCount, onSave, onArchive, onDelete, onReorder, safeToDelete, isFirst, isLast }) {
   const [editing, setEditing] = useState(false);
   const [name, setName] = useState(cat.name);
 
@@ -26,16 +113,24 @@ function CategoryRow({ cat, onSave, onArchive, onDelete, onReorder, safeToDelete
   };
 
   return (
-    <div className="flex items-center justify-between gap-2" style={{ padding: "9px 12px", borderBottom: "1px solid var(--border)" }}>
-      <div className="flex items-center gap-2 flex-1 min-w-0">
-        <Icon name={cat.icon || "layers"} size={14} style={{ color: "var(--accent-3)" }} className="shrink-0" />
-        {editing ? (
-          <input className="input" style={{ maxWidth: 220 }} value={name} onChange={(e) => setName(e.target.value)} onKeyDown={(e) => e.key === "Enter" && save()} autoFocus />
-        ) : (
-          <span className="text-sm truncate">{cat.name}</span>
-        )}
-        {cat.isBuiltIn && <span className="text-xs dim">built-in</span>}
-        {cat.archived && <Pill tone="rust" outline>Archived</Pill>}
+    <div className="flex items-center justify-between gap-2" style={{ padding: "12px 16px", borderBottom: "1px solid var(--border)" }}>
+      <div className="flex items-center gap-3 flex-1 min-w-0">
+        <Icon name={cat.icon || "layers"} size={16} style={{ color: "var(--accent-3)" }} className="shrink-0" />
+        <div className="min-w-0">
+          {editing ? (
+            <input
+              className="input" style={{ maxWidth: 240 }} value={name} autoFocus
+              onChange={(e) => setName(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter") save(); if (e.key === "Escape") { setName(cat.name); setEditing(false); } }}
+            />
+          ) : (
+            <div className="flex items-center gap-2">
+              <span className="text-sm fw-semibold truncate">{cat.name}</span>
+              {cat.archived && <Pill tone="rust" outline>Archived</Pill>}
+            </div>
+          )}
+          {!editing && <div className="text-xs dim">{activeCount} active task{activeCount === 1 ? "" : "s"}</div>}
+        </div>
       </div>
       <div className="flex items-center gap-1 shrink-0">
         {editing ? (
@@ -45,19 +140,19 @@ function CategoryRow({ cat, onSave, onArchive, onDelete, onReorder, safeToDelete
           </>
         ) : (
           <>
-            <button className="btn btn-ghost btn-icon" aria-label="Move up" disabled={isFirst} onClick={() => onReorder(cat.id, -1)}><Icon name="chevron-up" size={14} /></button>
-            <button className="btn btn-ghost btn-icon" aria-label="Move down" disabled={isLast} onClick={() => onReorder(cat.id, 1)}><Icon name="chevron-down" size={14} /></button>
-            <button className="btn btn-ghost btn-icon" aria-label="Rename" onClick={() => setEditing(true)}><Icon name="pencil" size={14} /></button>
-            <button className="btn btn-secondary btn-sm" onClick={() => onArchive(cat.id, !cat.archived)}>{cat.archived ? "Reactivate" : "Archive"}</button>
-            <button
-              className="btn btn-ghost btn-icon"
-              aria-label="Delete"
-              disabled={!safeToDelete}
-              data-tip={safeToDelete ? "Delete" : "Has tasks — archive instead"}
-              onClick={() => safeToDelete && window.confirm(`Delete category "${cat.name}"? This can't be undone.`) && onDelete(cat.id)}
-            >
-              <Icon name="trash-2" size={14} style={{ color: safeToDelete ? "var(--rust)" : "var(--muted)" }} />
-            </button>
+            <button className="btn btn-ghost btn-sm" onClick={() => setEditing(true)}>Edit</button>
+            <OverflowMenu
+              items={[
+                { label: "Move up", onClick: () => onReorder(cat.id, -1), disabled: isFirst },
+                { label: "Move down", onClick: () => onReorder(cat.id, 1), disabled: isLast },
+                { label: cat.archived ? "Restore" : "Archive", onClick: () => onArchive(cat.id, !cat.archived) },
+                {
+                  label: "Delete", danger: true, disabled: !safeToDelete,
+                  tip: safeToDelete ? undefined : "Has tasks — archive instead",
+                  onClick: () => window.confirm(`Delete category "${cat.name}"? This can't be undone.`) && onDelete(cat.id),
+                },
+              ]}
+            />
           </>
         )}
       </div>
@@ -68,33 +163,42 @@ function CategoryRow({ cat, onSave, onArchive, onDelete, onReorder, safeToDelete
 function CategoriesManager() {
   const { categoryDefs, taskDefinitions, addCategory, updateCategory, archiveCategory, deleteCategory, reorderCategory } = useAppData();
   const [showArchived, setShowArchived] = useState(false);
+  const [adding, setAdding] = useState(false);
   const [newName, setNewName] = useState("");
 
   const sorted = useMemo(() => [...categoryDefs].sort((a, b) => (a.order ?? 0) - (b.order ?? 0)), [categoryDefs]);
   const visible = sorted.filter((c) => showArchived || !c.archived);
-
+  const activeTaskCount = (catId) => taskDefinitions.filter((t) => t.categoryId === catId && !t.archived).length;
   const safeToDelete = (id) => !taskDefinitions.some((t) => t.categoryId === id);
 
   const submitNew = () => {
     if (!newName.trim()) return;
     addCategory({ name: newName.trim() });
     setNewName("");
+    setAdding(false);
   };
 
   return (
-    <Card className="mb-5" pad={false}>
-      <div className="flex items-center justify-between flex-wrap gap-2" style={{ padding: "13px 16px", borderBottom: "1px solid var(--border)" }}>
-        <div className="eyebrow">Categories</div>
-        <label className="checkbox-row" style={{ margin: 0 }}>
-          <input type="checkbox" checked={showArchived} onChange={(e) => setShowArchived(e.target.checked)} />
-          <span className="text-xs dim">Show archived</span>
-        </label>
+    <Card pad={false}>
+      <div className="flex items-center justify-between flex-wrap gap-2" style={{ padding: "16px" }}>
+        <div>
+          <h2 className="text-lg fw-bold">Manage Categories</h2>
+          <p className="text-sm dim mt-1">Rename, reorder, or archive your accounting categories.</p>
+        </div>
+        <div className="flex items-center gap-3">
+          <label className="checkbox-row" style={{ margin: 0 }}>
+            <input type="checkbox" checked={showArchived} onChange={(e) => setShowArchived(e.target.checked)} />
+            <span className="text-xs dim">Show archived</span>
+          </label>
+          <button className="btn btn-primary btn-sm" onClick={() => setAdding(true)}><Icon name="plus" size={14} /> Add Category</button>
+        </div>
       </div>
       <div>
         {visible.map((cat, i) => (
           <CategoryRow
             key={cat.id}
             cat={cat}
+            activeCount={activeTaskCount(cat.id)}
             onSave={updateCategory}
             onArchive={archiveCategory}
             onDelete={deleteCategory}
@@ -104,11 +208,19 @@ function CategoriesManager() {
             isLast={i === visible.length - 1}
           />
         ))}
+        {visible.length === 0 && <div className="text-sm dim" style={{ padding: 16 }}>No categories to show.</div>}
       </div>
-      <div className="flex gap-2" style={{ padding: 12 }}>
-        <input className="input flex-1" placeholder="New category name" value={newName} onChange={(e) => setNewName(e.target.value)} onKeyDown={(e) => e.key === "Enter" && submitNew()} />
-        <button className="btn btn-secondary btn-sm" onClick={submitNew}><Icon name="plus" size={14} /> Add category</button>
-      </div>
+      {adding && (
+        <div className="flex gap-2" style={{ padding: 16, borderTop: "1px solid var(--border)" }}>
+          <input
+            className="input flex-1" placeholder="New category name" value={newName} autoFocus
+            onChange={(e) => setNewName(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && submitNew()}
+          />
+          <button className="btn btn-primary btn-sm" onClick={submitNew}>Add</button>
+          <button className="btn btn-ghost btn-sm" onClick={() => { setAdding(false); setNewName(""); }}>Cancel</button>
+        </div>
+      )}
     </Card>
   );
 }
@@ -189,13 +301,12 @@ function RecurrenceFields({ draft, setDraft }) {
           )}
           {draft.monthlyRule?.kind === "bdAfterMonthEnd" && (
             <div className="flex items-center gap-2">
-              <span className="text-sm dim">BD+</span>
+              <span className="text-sm dim">Business days after month-end</span>
               <input
                 type="number" min={1} max={20} className="input mono" style={{ width: 80 }}
                 value={draft.monthlyRule.count || 1}
                 onChange={(e) => setDraft((d) => ({ ...d, monthlyRule: { ...d.monthlyRule, count: Number(e.target.value) } }))}
               />
-              <span className="text-xs dim">business days after month-end</span>
             </div>
           )}
         </div>
@@ -250,9 +361,10 @@ const blankDraft = (categoryId) => ({
   yearlyRule: { month: 0, day: 1 },
   customRule: { everyN: 1, unit: "days" },
   dueDate: null,
+  notes: "",
 });
 
-/* ------------------------------------------------------------ Task rows */
+/* -------------------------------------------------------- Edit Task modal */
 
 function OccurrencesPreview({ definitionId }) {
   const { occurrences, setOccurrenceStatus } = useAppData();
@@ -262,10 +374,10 @@ function OccurrencesPreview({ definitionId }) {
   );
   if (list.length === 0) return <div className="text-xs dim" style={{ padding: "8px 0" }}>No occurrences generated yet.</div>;
   return (
-    <div className="flex flex-col gap-1" style={{ padding: "8px 0" }}>
+    <div className="flex flex-col gap-1" style={{ padding: "8px 0", maxHeight: 220, overflowY: "auto" }}>
       {list.map((o) => (
         <div key={o.id} className="flex items-center justify-between text-xs" style={{ padding: "5px 8px", background: "var(--bg-soft)", borderRadius: 6 }}>
-          <span className="mono">{o.dueDate ? new Date(o.dueDate).toLocaleDateString(undefined, { day: "2-digit", month: "short", year: "numeric" }) : o.periodKey}</span>
+          <span className="mono">{o.dueDate ? formatShortDate(o.dueDate) : o.periodKey}</span>
           <span className="flex items-center gap-2">
             <Pill tone={o.status === "done" ? "green" : "rust"} outline={o.status !== "done"}>{o.status === "done" ? "Completed" : "Pending"}</Pill>
             <button className="btn btn-ghost btn-sm" onClick={() => setOccurrenceStatus(o.id, o.status === "done" ? "pending" : "done")}>
@@ -278,218 +390,264 @@ function OccurrencesPreview({ definitionId }) {
   );
 }
 
-function TaskRow({ def, categories, monthlyData, safeToDelete, onSave, onArchive, onDelete, onGraduate }) {
-  const [editing, setEditing] = useState(false);
-  const [showOccurrences, setShowOccurrences] = useState(false);
-  const [draft, setDraft] = useState(() => ({ ...blankDraft(def.categoryId), ...def }));
+function TaskEditModal({ def, categories, monthlyData, workingDays, onClose, onSave, onGraduate }) {
+  const isNew = !def;
+  const [draft, setDraft] = useState(() => (def ? { ...blankDraft(def.categoryId), ...def } : blankDraft(categories[0]?.id)));
   const [graduating, setGraduating] = useState(false);
-  const [graduationDate, setGraduationDate] = useState("");
+  const [graduationDate, setGraduationDate] = useState(def?.graduatedFrom ? toDateInputValue(def.graduatedFrom) : "");
   const [overlapConfirm, setOverlapConfirm] = useState(null);
+  const [showOccurrences, setShowOccurrences] = useState(false);
 
-  const isGraduated = def.legacyMonthlyStorage && !!def.graduatedFrom;
-  const isUngraduatedLegacy = def.legacyMonthlyStorage && !def.graduatedFrom;
-  const occurrenceCapable = !def.legacyMonthlyStorage || isGraduated;
+  const isGraduated = !isNew && def.legacyMonthlyStorage && !!def.graduatedFrom;
+  const isUngraduatedLegacy = !isNew && def.legacyMonthlyStorage && !def.graduatedFrom;
+  const hasScheduleEditor = isNew || isGraduated || (isUngraduatedLegacy && graduating);
 
-  const startEdit = () => {
-    setDraft({ ...blankDraft(def.categoryId), ...def });
-    setGraduating(false);
-    setGraduationDate(isGraduated ? toDateInputValue(def.graduatedFrom) : "");
-    setOverlapConfirm(null);
-    setEditing(true);
-  };
+  const quickDate = (ts) => { setGraduationDate(toDateInputValue(ts)); setOverlapConfirm(null); };
+
+  const preview = useMemo(() => {
+    if (!hasScheduleEditor) return [];
+    const from = graduating && graduationDate ? new Date(graduationDate + "T00:00:00") : new Date();
+    from.setHours(0, 0, 0, 0);
+    const to = new Date(from);
+    to.setMonth(to.getMonth() + 6);
+    try {
+      return generateInstances(draft, from, to, workingDays || DEFAULT_WORKING_DAYS).slice(0, 5);
+    } catch {
+      return [];
+    }
+  }, [hasScheduleEditor, draft, graduating, graduationDate, workingDays]);
 
   const doSave = () => {
     if (!draft.name.trim()) return;
+    if (isNew) {
+      onSave(null, draft);
+      onClose();
+      return;
+    }
     const graduatedFromMs = graduationDate ? new Date(graduationDate + "T00:00:00").getTime() : null;
     const wantsGraduation = isUngraduatedLegacy && graduating;
     const wantsCutoverChange = isGraduated && graduatedFromMs && graduatedFromMs !== def.graduatedFrom;
 
     if (wantsGraduation || wantsCutoverChange) {
-      if (!graduatedFromMs) return; // required
+      if (!graduatedFromMs) return;
       const { hasOverlap, monthKeys } = graduationOverlapWarning(def, monthlyData, graduatedFromMs);
       if (hasOverlap && !overlapConfirm) {
         setOverlapConfirm({ monthKeys });
         return;
       }
       onGraduate(def.id, { ...draft, graduatedFrom: graduatedFromMs });
-      setEditing(false);
+      onClose();
       return;
     }
     onSave(def.id, draft);
-    setEditing(false);
+    onClose();
   };
 
-  const quickDate = (ts) => { setGraduationDate(toDateInputValue(ts)); setOverlapConfirm(null); };
-
-  if (editing) {
-    return (
-      <div style={{ padding: "12px", borderBottom: "1px solid var(--border)", background: "var(--bg-soft)" }}>
-        <div className="grid grid-cols-2 gap-2 mb-2">
-          <div>
-            <label className="field-label">Name</label>
-            <input className="input" value={draft.name} onChange={(e) => setDraft((d) => ({ ...d, name: e.target.value }))} autoFocus />
-          </div>
-          <div>
-            <label className="field-label">Category</label>
-            <select className="select" value={draft.categoryId} onChange={(e) => setDraft((d) => ({ ...d, categoryId: e.target.value }))}>
-              {categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-            </select>
-          </div>
-        </div>
-        <div className="mb-2">
-          <label className="field-label">Priority</label>
-          <div className="segmented">
-            {PRIORITIES.map((p) => (
-              <button key={p} className={draft.priority === p ? "active" : ""} onClick={() => setDraft((d) => ({ ...d, priority: p }))}>{PRIORITY_META[p].label}</button>
-            ))}
-          </div>
-        </div>
-
-        {!def.legacyMonthlyStorage && (
-          <div className="mb-3">
-            <RecurrenceFields draft={draft} setDraft={setDraft} />
-          </div>
-        )}
-
-        {isUngraduatedLegacy && !graduating && (
-          <div className="mb-3" style={{ padding: 10, background: "var(--bg)", border: "1px dashed var(--border)", borderRadius: 8 }}>
-            <div className="text-xs dim mb-2">
-              This is one of the original 53 monthly tasks. It's currently on the legacy monthly system — its history keeps living in your existing reconciliation workflow, untouched.
-            </div>
-            <button type="button" className="btn btn-secondary btn-sm" onClick={() => setGraduating(true)}>Move to the new recurrence system</button>
-          </div>
-        )}
-
-        {isUngraduatedLegacy && graduating && (
-          <div className="mb-3">
-            <div className="text-xs dim mb-2">
-              Choose the new recurrence rule, and the exact date it should start from. Everything before that date stays exactly as it already is in your history — nothing is rewritten or deleted.
-            </div>
-            <RecurrenceFields draft={draft} setDraft={setDraft} />
-            <div className="mt-2">
-              <label className="field-label">Start new schedule from *</label>
-              <div className="flex items-center gap-2 flex-wrap">
-                <input type="date" className="input mono" style={{ width: "auto" }} value={graduationDate} onChange={(e) => { setGraduationDate(e.target.value); setOverlapConfirm(null); }} />
-                <button type="button" className="btn btn-ghost btn-sm" onClick={() => quickDate(Date.now())}>Today</button>
-                <button type="button" className="btn btn-ghost btn-sm" onClick={() => { const d = new Date(); d.setMonth(d.getMonth() + 1, 1); quickDate(d.getTime()); }}>Start of next month</button>
-              </div>
-              {!graduationDate && <div className="text-xs mt-1" style={{ color: "var(--rust)" }}>Required to move this task onto the new recurrence system.</div>}
-            </div>
-            <button type="button" className="btn btn-ghost btn-sm mt-2" onClick={() => { setGraduating(false); setGraduationDate(""); setOverlapConfirm(null); }}>
-              Cancel — keep on the legacy monthly system
-            </button>
-          </div>
-        )}
-
-        {isGraduated && (
-          <div className="mb-3">
-            <RecurrenceFields draft={draft} setDraft={setDraft} />
-            <div className="mt-2">
-              <label className="field-label">Schedule start date</label>
-              <input type="date" className="input mono" style={{ width: "auto" }} value={graduationDate} onChange={(e) => { setGraduationDate(e.target.value); setOverlapConfirm(null); }} />
-              <div className="text-xs dim mt-1">
-                Graduated from the legacy monthly system on {new Date(def.graduatedFrom).toLocaleDateString(undefined, { day: "2-digit", month: "short", year: "numeric" })}. History before this date is untouched. Changing this date won't remove occurrences already generated.
-              </div>
-            </div>
-          </div>
-        )}
-
-        {overlapConfirm && (
-          <div className="mb-3 text-xs" style={{ padding: 10, background: "var(--bg-soft)", border: "1px solid var(--gold)", borderRadius: 8 }}>
-            <div className="fw-semibold mb-1" style={{ color: "var(--gold)" }}>Heads up — overlapping history</div>
-            <div className="dim mb-2">
-              {overlapConfirm.monthKeys.join(", ")} already {overlapConfirm.monthKeys.length === 1 ? "has" : "have"} recorded history for this task under the old monthly system.
-              Choosing this start date means both the old record and new occurrences could exist for the same period — nothing will be deleted, but you may see this task represented twice for {overlapConfirm.monthKeys.length === 1 ? "that month" : "those months"}.
-            </div>
-            <button type="button" className="btn btn-secondary btn-sm" onClick={doSave}>Continue anyway</button>
-          </div>
-        )}
-
-        <div className="flex gap-2">
-          <button className="btn btn-primary btn-sm" onClick={doSave}>Save</button>
-          <button className="btn btn-ghost btn-sm" onClick={() => setEditing(false)}>Cancel</button>
-        </div>
-      </div>
-    );
-  }
-
   return (
-    <div style={{ borderBottom: "1px solid var(--border)" }}>
-      <div className="flex items-center justify-between gap-2" style={{ padding: "9px 12px" }}>
-        <div className="flex items-center gap-2 flex-1 min-w-0">
-          {(def.priority === "high" || def.priority === "critical") && (
-            <Icon name="flag" size={11} style={{ color: def.priority === "critical" ? "var(--rust)" : "var(--gold)" }} className="shrink-0" />
-          )}
-          <span className="text-sm truncate">{def.name}</span>
-          <span className="text-xs dim shrink-0">{FREQUENCY_LABELS[def.frequency]}</span>
-          {isGraduated && (
-            <span className="text-xs dim shrink-0" data-tip="Moved onto the new recurrence system">
-              · graduated {new Date(def.graduatedFrom).toLocaleDateString(undefined, { day: "2-digit", month: "short", year: "numeric" })}
-            </span>
-          )}
-          {def.archived && <Pill tone="rust" outline>Archived</Pill>}
-          {def.isBuiltIn && <span className="text-xs dim">built-in</span>}
-        </div>
-        <div className="flex items-center gap-1 shrink-0">
-          {occurrenceCapable && (
-            <button className="btn btn-ghost btn-sm" onClick={() => setShowOccurrences((s) => !s)}>
-              <Icon name={showOccurrences ? "chevron-up" : "chevron-down"} size={12} /> Occurrences
-            </button>
-          )}
-          <button className="btn btn-ghost btn-icon" aria-label="Edit" onClick={startEdit}><Icon name="pencil" size={14} /></button>
-          <button className="btn btn-secondary btn-sm" onClick={() => onArchive(def.id, !def.archived)}>{def.archived ? "Reactivate" : "Archive"}</button>
-          <button
-            className="btn btn-ghost btn-icon"
-            aria-label="Delete"
-            disabled={!safeToDelete}
-            data-tip={safeToDelete ? "Delete" : "Has history — archive instead"}
-            onClick={() => safeToDelete && window.confirm(`Delete "${def.name}"? This can't be undone.`) && onDelete(def.id)}
-          >
-            <Icon name="trash-2" size={14} style={{ color: safeToDelete ? "var(--rust)" : "var(--muted)" }} />
-          </button>
+    <>
+      <div className="overlay" onClick={onClose} />
+      <div className="modal">
+        <div className="modal-panel" style={{ maxWidth: 540 }} role="dialog" aria-modal="true" aria-label={isNew ? "Add task" : "Edit task"}>
+          <div style={{ padding: 22, maxHeight: "80vh", overflowY: "auto" }}>
+            <div className="flex items-center justify-between mb-1">
+              <h3 className="text-lg fw-bold">{isNew ? "Add Task" : "Edit Task"}</h3>
+              <IconButton name="x" label="Close" onClick={onClose} />
+            </div>
+            {!isNew && def.isBuiltIn && <div className="text-xs dim mb-4">One of your original accounting tasks.</div>}
+            {(isNew || !def.isBuiltIn) && <div className="mb-4" />}
+
+            <div className="eyebrow mb-2">Basic</div>
+            <div className="grid grid-cols-2 gap-2 mb-2">
+              <div>
+                <label className="field-label">Task Name</label>
+                <input className="input" value={draft.name} onChange={(e) => setDraft((d) => ({ ...d, name: e.target.value }))} autoFocus />
+              </div>
+              <div>
+                <label className="field-label">Category</label>
+                <select className="select" value={draft.categoryId} onChange={(e) => setDraft((d) => ({ ...d, categoryId: e.target.value }))}>
+                  {categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+                </select>
+              </div>
+            </div>
+            <div className="mb-4">
+              <label className="field-label">Priority</label>
+              <div className="segmented">
+                {PRIORITIES.map((p) => (
+                  <button key={p} type="button" className={draft.priority === p ? "active" : ""} onClick={() => setDraft((d) => ({ ...d, priority: p }))}>{PRIORITY_META[p].label}</button>
+                ))}
+              </div>
+            </div>
+
+            <div className="eyebrow mb-2">Schedule</div>
+
+            {isUngraduatedLegacy && !graduating && (
+              <div className="mb-4" style={{ padding: 12, background: "var(--bg-soft)", border: "1px dashed var(--border)", borderRadius: 8 }}>
+                <div className="text-sm dim mb-2">This task follows your regular monthly close cycle and doesn't have a recurring schedule set yet.</div>
+                <button type="button" className="btn btn-secondary btn-sm" onClick={() => setGraduating(true)}>Set a recurring schedule</button>
+              </div>
+            )}
+
+            {hasScheduleEditor && (
+              <div className="mb-4">
+                <RecurrenceFields draft={draft} setDraft={setDraft} />
+
+                {(isUngraduatedLegacy || isGraduated) && (
+                  <div className="mt-3">
+                    <label className="field-label">Start new schedule from</label>
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <input type="date" className="input mono" style={{ width: "auto" }} value={graduationDate} onChange={(e) => { setGraduationDate(e.target.value); setOverlapConfirm(null); }} />
+                      <button type="button" className="btn btn-ghost btn-sm" onClick={() => quickDate(Date.now())}>Today</button>
+                      <button type="button" className="btn btn-ghost btn-sm" onClick={() => { const d = new Date(); d.setMonth(d.getMonth() + 1, 1); quickDate(d.getTime()); }}>Start of next month</button>
+                    </div>
+                    <div className="text-xs dim mt-2">Your previous task history will remain unchanged.</div>
+                    {!graduationDate && isUngraduatedLegacy && (
+                      <div className="text-xs mt-1" style={{ color: "var(--rust)" }}>Pick a date to turn on this schedule.</div>
+                    )}
+                  </div>
+                )}
+
+                {preview.length > 0 && (
+                  <div className="mt-3" style={{ padding: 10, background: "var(--bg-soft)", borderRadius: 8 }}>
+                    <div className="text-xs fw-semibold mb-2" style={{ color: "var(--muted)" }}>Next occurrences</div>
+                    <div className="flex flex-col gap-1">
+                      {preview.map((p) => (
+                        <div key={p.periodKey} className="text-xs mono dim">{p.dueDate ? formatShortDate(p.dueDate) : p.periodKey}</div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {overlapConfirm && (
+                  <div className="mt-3 text-xs" style={{ padding: 10, background: "var(--bg-soft)", border: "1px solid var(--gold)", borderRadius: 8 }}>
+                    <div className="fw-semibold mb-1" style={{ color: "var(--gold)" }}>Heads up</div>
+                    <div className="dim mb-2">
+                      {overlapConfirm.monthKeys.join(", ")} already {overlapConfirm.monthKeys.length === 1 ? "has" : "have"} recorded history for this task.
+                      Starting the new schedule there means you may see this task listed twice for {overlapConfirm.monthKeys.length === 1 ? "that period" : "those periods"} — nothing will be lost.
+                    </div>
+                    <button type="button" className="btn btn-secondary btn-sm" onClick={doSave}>Continue anyway</button>
+                  </div>
+                )}
+
+                {isUngraduatedLegacy && graduating && (
+                  <button type="button" className="btn btn-ghost btn-sm mt-3" onClick={() => { setGraduating(false); setGraduationDate(""); setOverlapConfirm(null); }}>
+                    Cancel — keep the regular monthly cycle
+                  </button>
+                )}
+              </div>
+            )}
+
+            <div className="eyebrow mb-2">Details</div>
+            <div className="mb-2">
+              <label className="field-label">Notes</label>
+              <textarea
+                className="input" rows={3} style={{ resize: "vertical" }}
+                value={draft.notes || ""}
+                onChange={(e) => setDraft((d) => ({ ...d, notes: e.target.value }))}
+                placeholder="Optional notes about this task..."
+              />
+            </div>
+
+            {!isNew && hasScheduleEditor && (
+              <div className="mt-2">
+                <button type="button" className="btn btn-ghost btn-sm" onClick={() => setShowOccurrences((s) => !s)}>
+                  <Icon name={showOccurrences ? "chevron-up" : "chevron-down"} size={12} /> {showOccurrences ? "Hide" : "Show"} upcoming occurrences
+                </button>
+                {showOccurrences && <OccurrencesPreview definitionId={def.id} />}
+              </div>
+            )}
+
+            <div className="flex gap-2 mt-5">
+              <button className="btn btn-primary" onClick={doSave}>Save</button>
+              <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
+            </div>
+          </div>
         </div>
       </div>
-      {showOccurrences && occurrenceCapable && (
-        <div style={{ padding: "0 12px 10px" }}>
-          <OccurrencesPreview definitionId={def.id} />
+    </>
+  );
+}
+
+/* ------------------------------------------------------------ Task rows */
+
+function TaskRow({ def, categoryName, safeToDelete, onEdit, onArchive, onDelete }) {
+  return (
+    <div className="flex items-center justify-between gap-3" style={{ padding: "12px 16px", borderBottom: "1px solid var(--border)" }}>
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center gap-2">
+          {(def.priority === "high" || def.priority === "critical") && (
+            <Icon name="flag" size={12} style={{ color: def.priority === "critical" ? "var(--rust)" : "var(--gold)" }} className="shrink-0" />
+          )}
+          <span className="text-sm fw-semibold truncate">{def.name}</span>
+          {def.archived && <Pill tone="rust" outline>Archived</Pill>}
         </div>
-      )}
+        <div className="text-xs dim truncate">
+          {categoryName} · {scheduleLine(def)} · {PRIORITY_META[def.priority || "normal"].label}
+        </div>
+      </div>
+      <div className="flex items-center gap-1 shrink-0">
+        <button className="btn btn-ghost btn-sm" onClick={onEdit}>Edit</button>
+        <OverflowMenu
+          items={[
+            { label: def.archived ? "Restore" : "Archive", onClick: () => onArchive(def.id, !def.archived) },
+            {
+              label: "Delete", danger: true, disabled: !safeToDelete,
+              tip: safeToDelete ? undefined : "Has history — archive instead",
+              onClick: () => window.confirm(`Delete "${def.name}"? This can't be undone.`) && onDelete(def.id),
+            },
+          ]}
+        />
+      </div>
     </div>
   );
 }
 
 function TasksManager() {
-  const { taskDefinitions, categoryDefs, occurrences, monthlyData, addTaskDefinition, updateTaskDefinition, archiveTaskDefinition, deleteTaskDefinition, graduateTaskDefinition } = useAppData();
-  const [showArchived, setShowArchived] = useState(false);
-  const [filterCat, setFilterCat] = useState("all");
-  const [adding, setAdding] = useState(false);
-  const [newDraft, setNewDraft] = useState(() => blankDraft(categoryDefs[0]?.id));
-
+  const { taskDefinitions, categoryDefs, occurrences, monthlyData, settings, addTaskDefinition, updateTaskDefinition, archiveTaskDefinition, deleteTaskDefinition, graduateTaskDefinition } = useAppData();
+  const [query, setQuery] = useState("");
+  const [statusFilter, setStatusFilter] = useState("active"); // "all" | "active" | "archived"
+  const [categoryFilter, setCategoryFilter] = useState("all");
+  const [editing, setEditing] = useState(null); // { def } | { def: null } for "add" | null
   const categories = useMemo(() => [...categoryDefs].filter((c) => !c.archived).sort((a, b) => (a.order ?? 0) - (b.order ?? 0)), [categoryDefs]);
-  const visible = taskDefinitions.filter((t) => (showArchived || !t.archived) && (filterCat === "all" || t.categoryId === filterCat));
+  const categoryNameById = useMemo(() => Object.fromEntries(categoryDefs.map((c) => [c.id, c.name])), [categoryDefs]);
+
+  const q = query.trim().toLowerCase();
+  const visible = taskDefinitions
+    .filter((t) => statusFilter === "all" || (statusFilter === "archived" ? t.archived : !t.archived))
+    .filter((t) => categoryFilter === "all" || t.categoryId === categoryFilter)
+    .filter((t) => !q || t.name.toLowerCase().includes(q))
+    .sort((a, b) => (categoryNameById[a.categoryId] || "").localeCompare(categoryNameById[b.categoryId] || "") || a.name.localeCompare(b.name));
 
   const safeToDelete = (def) => definitionSafeToDelete(def, monthlyData, occurrences);
 
-  const submitNew = () => {
-    if (!newDraft.name.trim() || !newDraft.categoryId) return;
-    addTaskDefinition(newDraft);
-    setNewDraft(blankDraft(newDraft.categoryId));
-    setAdding(false);
+  const handleSave = (id, draft) => {
+    if (id) updateTaskDefinition(id, draft);
+    else addTaskDefinition(draft);
   };
 
   return (
     <Card pad={false}>
-      <div className="flex items-center justify-between flex-wrap gap-2" style={{ padding: "13px 16px", borderBottom: "1px solid var(--border)" }}>
-        <div className="eyebrow">Task Definitions</div>
-        <div className="flex items-center gap-3">
-          <select className="select mono" style={{ width: "auto" }} value={filterCat} onChange={(e) => setFilterCat(e.target.value)}>
+      <div style={{ padding: 16 }}>
+        <div className="flex items-center justify-between flex-wrap gap-3 mb-3">
+          <div>
+            <h2 className="text-lg fw-bold">Manage Tasks</h2>
+            <p className="text-sm dim mt-1">Rename, re-categorize, or set a schedule for any accounting task.</p>
+          </div>
+          <button className="btn btn-primary btn-sm" onClick={() => setEditing({ def: null })}><Icon name="plus" size={14} /> Add Task</button>
+        </div>
+        <div className="flex items-center gap-2 flex-wrap">
+          <div className="relative flex-1" style={{ minWidth: 180 }}>
+            <Icon name="search" size={14} className="muted" style={{ position: "absolute", left: 10, top: "50%", transform: "translateY(-50%)" }} />
+            <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search tasks..." className="input" style={{ paddingLeft: 30 }} aria-label="Search tasks" />
+          </div>
+          <div className="segmented">
+            {["all", "active", "archived"].map((f) => (
+              <button key={f} className={statusFilter === f ? "active" : ""} onClick={() => setStatusFilter(f)}>{f === "all" ? "All" : f === "active" ? "Active" : "Archived"}</button>
+            ))}
+          </div>
+          <select className="select mono" style={{ width: "auto" }} value={categoryFilter} onChange={(e) => setCategoryFilter(e.target.value)}>
             <option value="all">All categories</option>
             {categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
           </select>
-          <label className="checkbox-row" style={{ margin: 0 }}>
-            <input type="checkbox" checked={showArchived} onChange={(e) => setShowArchived(e.target.checked)} />
-            <span className="text-xs dim">Show archived</span>
-          </label>
         </div>
       </div>
       <div>
@@ -497,53 +655,27 @@ function TasksManager() {
           <TaskRow
             key={def.id}
             def={def}
-            categories={categories}
-            monthlyData={monthlyData}
+            categoryName={categoryNameById[def.categoryId] || "—"}
             safeToDelete={safeToDelete(def)}
-            onSave={updateTaskDefinition}
+            onEdit={() => setEditing({ def })}
             onArchive={archiveTaskDefinition}
             onDelete={deleteTaskDefinition}
-            onGraduate={graduateTaskDefinition}
           />
         ))}
         {visible.length === 0 && <div className="text-sm dim" style={{ padding: 16 }}>No tasks match this filter.</div>}
       </div>
 
-      <div style={{ padding: 12 }}>
-        {!adding ? (
-          <button className="btn btn-secondary btn-sm" onClick={() => setAdding(true)}><Icon name="plus" size={14} /> Add task</button>
-        ) : (
-          <div style={{ padding: 12, background: "var(--bg-soft)", borderRadius: 8 }}>
-            <div className="grid grid-cols-2 gap-2 mb-2">
-              <div>
-                <label className="field-label">Name</label>
-                <input className="input" value={newDraft.name} onChange={(e) => setNewDraft((d) => ({ ...d, name: e.target.value }))} autoFocus />
-              </div>
-              <div>
-                <label className="field-label">Category</label>
-                <select className="select" value={newDraft.categoryId} onChange={(e) => setNewDraft((d) => ({ ...d, categoryId: e.target.value }))}>
-                  {categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-                </select>
-              </div>
-            </div>
-            <div className="mb-2">
-              <label className="field-label">Priority</label>
-              <div className="segmented">
-                {PRIORITIES.map((p) => (
-                  <button key={p} className={newDraft.priority === p ? "active" : ""} onClick={() => setNewDraft((d) => ({ ...d, priority: p }))}>{PRIORITY_META[p].label}</button>
-                ))}
-              </div>
-            </div>
-            <div className="mb-3">
-              <RecurrenceFields draft={newDraft} setDraft={setNewDraft} />
-            </div>
-            <div className="flex gap-2">
-              <button className="btn btn-primary btn-sm" onClick={submitNew}>Add task</button>
-              <button className="btn btn-ghost btn-sm" onClick={() => setAdding(false)}>Cancel</button>
-            </div>
-          </div>
-        )}
-      </div>
+      {editing && (
+        <TaskEditModal
+          def={editing.def}
+          categories={categories}
+          monthlyData={monthlyData}
+          workingDays={settings.workingDays}
+          onClose={() => setEditing(null)}
+          onSave={handleSave}
+          onGraduate={graduateTaskDefinition}
+        />
+      )}
     </Card>
   );
 }
@@ -551,15 +683,18 @@ function TasksManager() {
 /* ----------------------------------------------------------------- Root */
 
 export function ManageTasks() {
+  const [tab, setTab] = useState("tasks");
   return (
     <div>
       <p className="text-sm dim mb-4">
-        Manage the accounting task library — rename, re-categorize, archive, or create new tasks with their own
-        recurrence. The original 53 monthly tasks keep working exactly as before through the Task Board; new tasks
-        with weekly, yearly, or custom recurrence generate their own occurrences below.
+        Manage the accounting task library — rename, re-categorize, archive, or set a schedule. Your original 53
+        monthly tasks and their history keep working exactly as before unless you choose to give one a schedule.
       </p>
-      <CategoriesManager />
-      <TasksManager />
+      <div className="tabs mb-5">
+        <button className={`tab-btn ${tab === "tasks" ? "active" : ""}`} onClick={() => setTab("tasks")}>Tasks</button>
+        <button className={`tab-btn ${tab === "categories" ? "active" : ""}`} onClick={() => setTab("categories")}>Categories</button>
+      </div>
+      {tab === "tasks" ? <TasksManager /> : <CategoriesManager />}
     </div>
   );
 }

@@ -364,10 +364,18 @@ create index idx_task_occurrences_definition on task_occurrences(user_id, defini
 --     through (e.g. after reconciliation_entries but before work_sessions)
 --     must be retried in full next time, not mistaken for done. Not synced
 --     data, so not added to the realtime publication below.
+--
+--     phase_a_migrated_at is a second, independent marker for the Phase A
+--     tables specifically (task_definitions/categories/task_occurrences) —
+--     an account whose completed_at predates Phase A must not be assumed
+--     to have Phase A metadata too. See CloudSyncEngine.js's
+--     _phaseAMigrationIfNeeded and supabase/migrations/003_phase_a_
+--     bootstrap_marker.sql for why this is a separate column, not reused.
 -- ----------------------------------------------------------------------------
 create table sync_bootstrap (
   user_id uuid primary key references auth.users(id) on delete cascade,
-  completed_at timestamptz not null default now()
+  completed_at timestamptz not null default now(),
+  phase_a_migrated_at timestamptz
 );
 alter table sync_bootstrap enable row level security;
 create policy "own row" on sync_bootstrap for all
