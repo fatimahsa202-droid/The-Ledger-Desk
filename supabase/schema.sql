@@ -382,6 +382,92 @@ create policy "own row" on sync_bootstrap for all
   using (auth.uid() = user_id) with check (auth.uid() = user_id);
 
 -- ----------------------------------------------------------------------------
+-- Google Sheets: Scheduled Names — see supabase/migrations/004_scheduled_
+-- names.sql for full rationale (identity model, security model). Fully
+-- independent of every table above; nothing here feeds accounting/
+-- reconciliation completion totals.
+-- ----------------------------------------------------------------------------
+create table sheet_connections (
+  id text primary key,
+  user_id uuid not null references auth.users(id) on delete cascade,
+  -- Google consent must happen BEFORE the user can pick a spreadsheet
+  -- (the Picker itself needs an access token to run), so a connection
+  -- genuinely exists in an incomplete state for a little while: the row
+  -- is created the moment OAuth succeeds (sync_state = 'pending_setup'),
+  -- with spreadsheet/tab left null until the user finishes Picker +
+  -- column mapping and presses Connect. The check constraint below is
+  -- what makes "incomplete" a real, honest state rather than empty
+  -- strings standing in for null.
+  display_name text not null default '',
+  spreadsheet_id text,
+  spreadsheet_name text not null default '',
+  sheet_tab text,
+  -- {"name": "Patient", "date": "Appointment Date"} today; a jsonb map so
+  -- an optional third mapped field later is a new key here, not a new
+  -- column / migration.
+  column_mapping jsonb not null default '{}'::jsonb,
+  -- The exact header text of Ledger Desk's own appended identity column in
+  -- this sheet, re-located by this text on every sync rather than by a
+  -- remembered index (an index can drift if the user adds their own
+  -- columns). Null until the first successful setup sync creates it.
+  id_column_header text,
+  sync_state text not null default 'pending_setup'
+    check (sync_state in ('pending_setup', 'idle', 'syncing', 'error', 'id_column_missing', 'reauth_required')),
+  last_synced_at timestamptz,
+  last_sync_error text,
+  is_active boolean not null default true,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  -- Once setup is no longer pending, the target sheet/tab must be real —
+  -- "incomplete" is only a valid state while sync_state = 'pending_setup'.
+  check (sync_state = 'pending_setup' or (spreadsheet_id is not null and sheet_tab is not null))
+);
+alter table sheet_connections enable row level security;
+create policy "own rows" on sheet_connections for all
+  using (auth.uid() = user_id) with check (auth.uid() = user_id);
+create trigger trg_updated_at before update on sheet_connections
+  for each row execute function set_updated_at();
+create index idx_sheet_connections_user on sheet_connections(user_id);
+create unique index uq_sheet_connections_active_target
+  on sheet_connections(user_id, spreadsheet_id, sheet_tab)
+  where is_active;
+
+-- Server-only — RLS enabled with NO policies for authenticated/anon
+-- (default-deny). Only reachable via service_role inside an Edge Function.
+create table google_oauth_tokens (
+  connection_id text primary key references sheet_connections(id) on delete cascade,
+  user_id uuid not null references auth.users(id) on delete cascade,
+  refresh_token text not null,
+  access_token text,
+  access_token_expires_at timestamptz,
+  updated_at timestamptz not null default now()
+);
+alter table google_oauth_tokens enable row level security;
+create trigger trg_updated_at before update on google_oauth_tokens
+  for each row execute function set_updated_at();
+
+create table scheduled_names (
+  id text primary key,
+  connection_id text not null references sheet_connections(id) on delete cascade,
+  user_id uuid not null references auth.users(id) on delete cascade,
+  name text not null,
+  scheduled_date date not null,
+  source_status text not null default 'active' check (source_status in ('active', 'removed')),
+  status text not null default 'pending' check (status in ('pending', 'done')),
+  completed_at timestamptz,
+  extra_fields jsonb not null default '{}'::jsonb,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+alter table scheduled_names enable row level security;
+create policy "own rows" on scheduled_names for all
+  using (auth.uid() = user_id) with check (auth.uid() = user_id);
+create trigger trg_updated_at before update on scheduled_names
+  for each row execute function set_updated_at();
+create index idx_scheduled_names_connection on scheduled_names(connection_id);
+create index idx_scheduled_names_user_date on scheduled_names(user_id, scheduled_date);
+
+-- ----------------------------------------------------------------------------
 -- Realtime: publish change events for every synced table (used purely as a
 -- latency optimization by the client — never as the sole correctness path).
 -- ----------------------------------------------------------------------------
@@ -400,6 +486,8 @@ alter publication supabase_realtime add table
   preferences_cloud,
   task_definitions,
   categories,
-  task_occurrences;
+  task_occurrences,
+  sheet_connections,
+  scheduled_names;
 
 commit;
