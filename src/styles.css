@@ -421,6 +421,13 @@ input[type="checkbox"], input[type="radio"] { width: 18px; height: 18px; accent-
   .board-layout-nav { width: 100%; }
 }
 
+/* ---------- calendar V2 grid/agenda switch ---------- */
+.calendar-agenda-view { display: none; }
+@media (max-width: 700px) {
+  .calendar-grid-view { display: none; }
+  .calendar-agenda-view { display: flex; }
+}
+
 /* ---------- mobile / responsive ---------- */
 .mobile-topbar { display: none; }
 .bottom-nav { display: none; }
