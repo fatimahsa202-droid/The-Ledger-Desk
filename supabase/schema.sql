@@ -446,6 +446,9 @@ alter table google_oauth_tokens enable row level security;
 create trigger trg_updated_at before update on google_oauth_tokens
   for each row execute function set_updated_at();
 
+-- id = `${connectionId}::${rawSheetRowUuid}` — same composite-string
+-- pattern as task_occurrences.id, so two different Ledger Desk accounts
+-- reading the identical physical Sheet never collide or share state.
 create table scheduled_names (
   id text primary key,
   connection_id text not null references sheet_connections(id) on delete cascade,

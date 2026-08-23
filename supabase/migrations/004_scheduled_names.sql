@@ -105,10 +105,23 @@ create trigger trg_updated_at before update on google_oauth_tokens
   for each row execute function set_updated_at();
 
 -- ----------------------------------------------------------------------------
--- 3. Scheduled Names — the imported rows themselves. `id` is the same
---    string Ledger Desk writes into the sheet's hidden identity column,
---    so matching an incoming sheet row to its Supabase record is a plain
---    equality lookup, never a heuristic. Completion (`status`,
+-- 3. Scheduled Names — the imported rows themselves. `id` is
+--    `${connectionId}::${rawSheetRowUuid}` — the SAME deterministic-
+--    composite-string pattern already used for task_occurrences.id
+--    (`${definitionId}::${periodKey}`) elsewhere in this schema, and for
+--    the same reason: the raw UUID actually written into the user's
+--    spreadsheet cell is just a short, plain, per-row id with no notion
+--    of which Ledger Desk account is reading it, so it is NOT globally
+--    unique on its own — if the identical physical spreadsheet is ever
+--    connected by two different Ledger Desk accounts (e.g. a shared
+--    clinic Sheet, two staff logins), both would see the same raw UUID.
+--    Prefixing with connection_id (which always belongs to exactly one
+--    user_id) keeps every account's rows — and completion state —
+--    fully independent and non-colliding, without the Sheet itself ever
+--    needing to know or store anything account-specific. Matching an
+--    incoming sheet row to its Supabase record is still a plain equality
+--    lookup, never a heuristic — just keyed by the composite string
+--    rather than the bare raw UUID. Completion (`status`,
 --    `completed_at`) is Ledger Desk-owned and is NEVER written by the
 --    sync path — only Complete/Reopen actions touch those two columns.
 --    Conceptually and technically separate from every accounting table;
