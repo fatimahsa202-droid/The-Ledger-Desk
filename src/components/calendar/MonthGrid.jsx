@@ -1,4 +1,5 @@
 import React, { useMemo } from "react";
+import { Icon } from "../../lib/Icon.jsx";
 import { formatHours } from "../../lib/format.js";
 
 const WEEKDAY_SHORT = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
@@ -6,10 +7,11 @@ const STATUS_COLOR = { overdue: "var(--rust)", "in-progress": "var(--amber)", pe
 const STATUS_RANK = { overdue: 0, "in-progress": 1, pending: 2, done: 3 };
 const MAX_DOTS = 4;
 
-function DayCell({ date, dayKeyStr, occs, workSeconds, isToday, showTasks, showWork, onSelect }) {
+function DayCell({ date, dayKeyStr, occs, names, workSeconds, isToday, showTasks, showNames, showWork, onSelect }) {
   if (!date) return <div />;
   const dots = [...occs].sort((a, b) => STATUS_RANK[a.displayStatus] - STATUS_RANK[b.displayStatus]).slice(0, MAX_DOTS);
   const overflow = occs.length - dots.length;
+  const namesOverdue = names.filter((n) => n.displayStatus === "overdue").length;
   return (
     <button
       onClick={() => onSelect(dayKeyStr)}
@@ -30,6 +32,12 @@ function DayCell({ date, dayKeyStr, occs, workSeconds, isToday, showTasks, showW
           {overflow > 0 && <span className="mono" style={{ fontSize: 9, opacity: 0.75 }}>+{overflow}</span>}
         </span>
       )}
+      {showNames && names.length > 0 && (
+        <span className="flex items-center gap-1" style={{ color: namesOverdue > 0 ? "var(--rust)" : "var(--purple)" }}>
+          <Icon name="users" size={10} />
+          <span className="mono" style={{ fontSize: 9.5 }}>{names.length}</span>
+        </span>
+      )}
       {showWork && workSeconds > 0 && (
         <span className="mono muted" style={{ fontSize: 9.5 }}>{formatHours(workSeconds)}</span>
       )}
@@ -37,10 +45,11 @@ function DayCell({ date, dayKeyStr, occs, workSeconds, isToday, showTasks, showW
   );
 }
 
-/** Compact month grid — status dots + a muted hours label per cell, never full session/task detail (that lives in DayDetailPanel). */
-export function MonthGrid({ year, monthIndex, occByDay, workByDay, todayKey, sourceFilter, onSelectDay, dayKeyOf }) {
-  const showTasks = sourceFilter !== "work";
-  const showWork = sourceFilter !== "tasks";
+/** Compact month grid — status dots, a Scheduled Names count, and a muted hours label per cell, never full session/task/name detail (that lives in DayDetailPanel). */
+export function MonthGrid({ year, monthIndex, occByDay, namesByDay, workByDay, todayKey, sourceFilter, onSelectDay, dayKeyOf }) {
+  const showTasks = sourceFilter === "all" || sourceFilter === "tasks";
+  const showNames = sourceFilter === "all" || sourceFilter === "names";
+  const showWork = sourceFilter === "all" || sourceFilter === "work";
 
   const cells = useMemo(() => {
     const first = new Date(year, monthIndex, 1);
@@ -66,8 +75,8 @@ export function MonthGrid({ year, monthIndex, occByDay, workByDay, todayKey, sou
           return (
             <DayCell
               key={i} date={d} dayKeyStr={k}
-              occs={occByDay[k] || []} workSeconds={workByDay[k] || 0}
-              isToday={k === todayKey} showTasks={showTasks} showWork={showWork}
+              occs={occByDay[k] || []} names={namesByDay[k] || []} workSeconds={workByDay[k] || 0}
+              isToday={k === todayKey} showTasks={showTasks} showNames={showNames} showWork={showWork}
               onSelect={onSelectDay}
             />
           );

@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useMemo, useState } from "react";
 import { Icon } from "../../lib/Icon.jsx";
 import { IconButton, Pill } from "../primitives.jsx";
 import { CategoryTimeDrilldown } from "../dashboard/CategoryTimeDrilldown.jsx";
@@ -6,11 +6,69 @@ import { formatHours } from "../../lib/format.js";
 
 const STATUS_TONE = { done: "green", overdue: "rust", "in-progress": "amber", pending: "accent" };
 const STATUS_LABEL = { done: "Completed", overdue: "Overdue", "in-progress": "In Progress", pending: "Pending" };
+const NAME_FILTERS = [
+  { id: "all", label: "All" },
+  { id: "pending", label: "Pending" },
+  { id: "done", label: "Completed" },
+];
 
-/** Day → Category → Task → Sessions detail modal. Reuses the existing overlay/modal pattern and CategoryTimeDrilldown/SessionLog components unchanged. */
-export function DayDetailPanel({ dateLabel, occurrences, workTree, workSeconds, sourceFilter, onClose, onToggleOccurrence }) {
-  const showTasks = sourceFilter !== "work";
-  const showWork = sourceFilter !== "tasks";
+function ScheduledNamesSection({ names, onToggle }) {
+  const [search, setSearch] = useState("");
+  const [statusFilter, setStatusFilter] = useState("all");
+
+  const visible = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    return names.filter((n) => {
+      if (statusFilter === "pending" && n.status === "done") return false;
+      if (statusFilter === "done" && n.status !== "done") return false;
+      if (q && !n.name.toLowerCase().includes(q)) return false;
+      return true;
+    });
+  }, [names, search, statusFilter]);
+
+  return (
+    <div className="mb-5">
+      <div className="flex items-center justify-between mb-2 flex-wrap gap-2">
+        <div className="eyebrow">Scheduled Names</div>
+        {names.length > 5 && (
+          <div className="flex items-center gap-2">
+            <input className="input" style={{ height: 30, fontSize: 12, width: 140 }} placeholder="Search…" value={search} onChange={(e) => setSearch(e.target.value)} />
+            <div className="segmented" style={{ padding: 2 }}>
+              {NAME_FILTERS.map((f) => (
+                <button key={f.id} className={statusFilter === f.id ? "active" : ""} style={{ padding: "3px 8px", fontSize: 11 }} onClick={() => setStatusFilter(f.id)}>{f.label}</button>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+      {names.length === 0 ? (
+        <div className="text-sm dim">No Scheduled Names this day.</div>
+      ) : visible.length === 0 ? (
+        <div className="text-sm dim">No matches.</div>
+      ) : (
+        <div className="flex flex-col gap-2">
+          {visible.map((n) => (
+            <div key={n.id} className="flex items-center justify-between gap-2 text-sm" style={{ background: "var(--bg-soft)", border: "1px solid var(--border)", borderRadius: 10, padding: "9px 12px" }}>
+              <span className="truncate">{n.name}</span>
+              <span className="flex items-center gap-2 shrink-0">
+                <Pill tone={STATUS_TONE[n.displayStatus]} outline={n.displayStatus !== "done"}>{STATUS_LABEL[n.displayStatus]}</Pill>
+                <button className="btn btn-ghost btn-sm" onClick={() => onToggle(n.id, n.status === "done" ? "pending" : "done")}>
+                  {n.status === "done" ? "Reopen" : "Complete"}
+                </button>
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Day → Category → Task → Sessions detail modal, plus Accounting Tasks and Scheduled Names lists. Reuses the existing overlay/modal pattern and CategoryTimeDrilldown/SessionLog components unchanged. */
+export function DayDetailPanel({ dateLabel, occurrences, names, workTree, workSeconds, sourceFilter, onClose, onToggleOccurrence, onToggleName }) {
+  const showTasks = sourceFilter === "all" || sourceFilter === "tasks";
+  const showNames = sourceFilter === "all" || sourceFilter === "names";
+  const showWork = sourceFilter === "all" || sourceFilter === "work";
 
   return (
     <>
@@ -50,6 +108,8 @@ export function DayDetailPanel({ dateLabel, occurrences, workTree, workSeconds, 
                 )}
               </div>
             )}
+
+            {showNames && <ScheduledNamesSection names={names} onToggle={onToggleName} />}
 
             {showWork && (
               <div>

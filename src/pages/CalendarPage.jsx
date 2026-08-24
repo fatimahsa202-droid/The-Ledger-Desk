@@ -1,16 +1,19 @@
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { Icon } from "../lib/Icon.jsx";
 import { Card } from "../components/primitives.jsx";
 import { useAppData } from "../store/AppDataProvider.jsx";
 import { dayKey } from "../lib/format.js";
 import { monthKeyFor, shiftMonthKey, parseMonthKey } from "../lib/monthNav.js";
 import { occurrencesByDay, workSecondsByDay, dayWorkActivityTree } from "../lib/calendarSelectors.js";
+import { scheduledNamesByDay } from "../lib/scheduledNamesSelectors.js";
+import { fetchScheduledNamesInRange, setScheduledNameStatus, subscribeToScheduledNamesChanges } from "../lib/google/scheduledNamesApi.js";
+import { useCloudSync } from "../store/CloudSyncProvider.jsx";
 import { MonthGrid } from "../components/calendar/MonthGrid.jsx";
 import { AgendaList } from "../components/calendar/AgendaList.jsx";
 import { DayDetailPanel } from "../components/calendar/DayDetailPanel.jsx";
 
 const MONTH_NAMES = ["January","February","March","April","May","June","July","August","September","October","November","December"];
-const SOURCE_LABELS = { all: "All", tasks: "Accounting Tasks", work: "Work Activity" };
+const SOURCE_LABELS = { all: "All", tasks: "Accounting Tasks", names: "Scheduled Names", work: "Work Activity" };
 
 function useYearOptions(selectedYear, currentYear) {
   return useMemo(() => {
@@ -27,8 +30,12 @@ function dateFromDayKey(k) {
   return new Date(y, m - 1, d);
 }
 
+function pad2(n) { return String(n).padStart(2, "0"); }
+
 export function CalendarPage() {
   const { sessions, occurrences, setOccurrenceStatus } = useAppData();
+  const { diagnostics } = useCloudSync();
+  const signedIn = Boolean(diagnostics.connectedEmail);
   const now = Date.now();
   const todayKey = dayKey(now);
   const currentYear = new Date().getFullYear();
@@ -37,6 +44,7 @@ export function CalendarPage() {
   const [monthIndex, setMonthIndex] = useState(new Date().getMonth());
   const [sourceFilter, setSourceFilter] = useState("all");
   const [selectedDayKey, setSelectedDayKey] = useState(null);
+  const [scheduledNames, setScheduledNames] = useState([]);
 
   const monthKey = monthKeyFor(year, monthIndex);
   const currentMonthKey = monthKeyFor(currentYear, new Date().getMonth());
@@ -45,15 +53,40 @@ export function CalendarPage() {
 
   const monthStart = useMemo(() => new Date(year, monthIndex, 1).getTime(), [year, monthIndex]);
   const monthEnd = useMemo(() => new Date(year, monthIndex + 1, 0, 23, 59, 59, 999).getTime(), [year, monthIndex]);
+  const monthStartDateStr = `${year}-${pad2(monthIndex + 1)}-01`;
+  const monthEndDateStr = `${year}-${pad2(monthIndex + 1)}-${pad2(new Date(year, monthIndex + 1, 0).getDate())}`;
 
   const occByDay = useMemo(() => occurrencesByDay(occurrences, monthStart, monthEnd, now), [occurrences, monthStart, monthEnd, now]);
   const workByDay = useMemo(() => workSecondsByDay(sessions, monthStart, monthEnd), [sessions, monthStart, monthEnd]);
+  const namesByDay = useMemo(() => scheduledNamesByDay(scheduledNames, todayKey), [scheduledNames, todayKey]);
+
+  const refreshNames = () => {
+    if (!signedIn) { setScheduledNames([]); return; }
+    fetchScheduledNamesInRange(monthStartDateStr, monthEndDateStr).then(setScheduledNames).catch(() => setScheduledNames([]));
+  };
+
+  useEffect(() => {
+    refreshNames();
+    // Only subscribe once actually signed in — matches CloudSyncEngine's
+    // own gating (it waits for a known userId before opening any realtime
+    // channel), rather than as soon as a client merely exists.
+    if (!signedIn) return undefined;
+    const unsubscribe = subscribeToScheduledNamesChanges(refreshNames);
+    return unsubscribe;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [monthStartDateStr, monthEndDateStr, signedIn]);
 
   const goToMonth = (y, m) => { setYear(y); setMonthIndex(m); };
   const shift = (delta) => { const shifted = shiftMonthKey(monthKey, delta); const { year: y, monthIndex: m } = parseMonthKey(shifted); goToMonth(y, m); };
   const goToday = () => { setYear(currentYear); setMonthIndex(new Date().getMonth()); setSelectedDayKey(null); };
 
+  const handleToggleName = async (id, status) => {
+    await setScheduledNameStatus(id, status).catch(() => {});
+    refreshNames();
+  };
+
   const selectedOccs = selectedDayKey ? (occByDay[selectedDayKey] || []) : [];
+  const selectedNames = selectedDayKey ? (namesByDay[selectedDayKey] || []) : [];
   const selectedWorkSeconds = selectedDayKey ? (workByDay[selectedDayKey] || 0) : 0;
   const selectedWorkTree = useMemo(() => (selectedDayKey ? dayWorkActivityTree(sessions, selectedDayKey) : []), [sessions, selectedDayKey]);
   const selectedDateLabel = selectedDayKey ? dateFromDayKey(selectedDayKey).toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric", year: "numeric" }) : "";
@@ -64,7 +97,7 @@ export function CalendarPage() {
         <div>
           <div className="eyebrow">Overview</div>
           <h1 className="page-title mt-1">Calendar</h1>
-          <p className="page-sub">Scheduled accounting work and tracked time, together.</p>
+          <p className="page-sub">Scheduled accounting work, Scheduled Names, and tracked time, together.</p>
         </div>
       </div>
 
@@ -82,7 +115,7 @@ export function CalendarPage() {
 
         <div className="flex items-center gap-2 flex-wrap">
           <div className="segmented">
-            {["all", "tasks", "work"].map((f) => (
+            {["all", "tasks", "names", "work"].map((f) => (
               <button key={f} className={sourceFilter === f ? "active" : ""} onClick={() => setSourceFilter(f)}>{SOURCE_LABELS[f]}</button>
             ))}
           </div>
@@ -93,13 +126,13 @@ export function CalendarPage() {
       <Card>
         <MonthGrid
           year={year} monthIndex={monthIndex}
-          occByDay={occByDay} workByDay={workByDay}
+          occByDay={occByDay} namesByDay={namesByDay} workByDay={workByDay}
           todayKey={todayKey} sourceFilter={sourceFilter}
           onSelectDay={setSelectedDayKey} dayKeyOf={dayKey}
         />
         <AgendaList
           year={year} monthIndex={monthIndex}
-          occByDay={occByDay} workByDay={workByDay}
+          occByDay={occByDay} namesByDay={namesByDay} workByDay={workByDay}
           todayKey={todayKey} sourceFilter={sourceFilter}
           onSelectDay={setSelectedDayKey} dayKeyOf={dayKey}
         />
@@ -109,11 +142,13 @@ export function CalendarPage() {
         <DayDetailPanel
           dateLabel={selectedDateLabel}
           occurrences={selectedOccs}
+          names={selectedNames}
           workTree={selectedWorkTree}
           workSeconds={selectedWorkSeconds}
           sourceFilter={sourceFilter}
           onClose={() => setSelectedDayKey(null)}
           onToggleOccurrence={setOccurrenceStatus}
+          onToggleName={handleToggleName}
         />
       )}
     </div>
