@@ -15,3 +15,6 @@ export const GOOGLE_OAUTH_CLIENT_ID = "414572547619-itfm9r14c7aajvb211s3bgn3su94
 
 /** Minimum scopes needed: drive.file for Picker access to only files the user explicitly opens (never full Drive), spreadsheets (read+write) for reading Sheet data and writing Ledger Desk's own hidden identity column. */
 export const GOOGLE_OAUTH_SCOPES = "https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/spreadsheets";
+
+/** Restricted to the Google Picker API only, and to this app's own origin as an HTTP referrer — not privileged like an OAuth client secret, but still scoped tightly rather than left wide open. */
+export const GOOGLE_PICKER_API_KEY = "AIzaSyAXzZtUski8xCj46XZvJtIhziqKRf21rXc";

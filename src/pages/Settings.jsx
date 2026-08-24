@@ -7,6 +7,7 @@ import { levelInfo } from "../lib/gamification.js";
 import { storage, STORAGE_KEYS, exportAllData } from "../lib/storage.js";
 import { downloadTextFile } from "../lib/exportCsv.js";
 import { CloudConnectionsCard } from "../components/CloudSync.jsx";
+import { GoogleSheetConnectionsCard } from "../components/google/GoogleSheetConnectionsCard.jsx";
 import { WEEKDAY_LABELS } from "../lib/recurrence.js";
 
 export function Settings({ notifications }) {
@@ -207,6 +208,8 @@ export function Settings({ notifications }) {
       </Card>
 
       <CloudConnectionsCard />
+
+      <GoogleSheetConnectionsCard />
 
       <Card className="mb-5">
         <div className="eyebrow mb-3">Data &amp; Backup</div>
