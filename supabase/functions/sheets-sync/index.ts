@@ -132,6 +132,22 @@ Deno.serve(async (req) => {
     if (connErr || !conn) throw new Error("Sheet connection not found.");
     if (conn.sync_state === "pending_setup") throw new Error("This connection's setup isn't finished yet.");
 
+    // Overlap guard: with auto-sync (periodic + focus + multi-device), two
+    // triggers can genuinely race for the same connection. If one is
+    // already mid-run (sync_state = 'syncing', set the moment a run starts
+    // — see below), skip rather than run a second concurrent Google
+    // read/write pass. The updated_at recency check is what makes this
+    // self-healing: a run that crashed instead of completing can't wedge
+    // every future sync forever, since the stale 'syncing' state simply
+    // ages out. Not the only safety net here — scheduled_names is written
+    // by id-keyed upsert, never insert, so even a genuine race would only
+    // ever overwrite name/scheduled_date harmlessly, never create a
+    // duplicate row or touch status/completed_at.
+    const SYNC_LOCK_TIMEOUT_MS = 3 * 60 * 1000;
+    if (conn.sync_state === "syncing" && conn.updated_at && Date.now() - new Date(conn.updated_at).getTime() < SYNC_LOCK_TIMEOUT_MS) {
+      return json({ ok: true, skipped: true, reason: "A sync for this connection is already in progress." });
+    }
+
     await admin.from("sheet_connections").update({ sync_state: "syncing" }).eq("id", connectionId);
 
     // ---- Everything below is Google reads/writes + in-memory diffing.

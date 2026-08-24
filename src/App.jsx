@@ -6,6 +6,7 @@ import { useSound } from "./hooks/useSound.js";
 import { useNotifications, useStreakRiskReminder } from "./hooks/useNotifications.js";
 import { useHashRoute } from "./hooks/useHashRoute.js";
 import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts.js";
+import { useScheduledNamesAutoSync } from "./hooks/useScheduledNamesAutoSync.js";
 import { AppShell } from "./components/AppShell.jsx";
 import { Toasts } from "./components/Toasts.jsx";
 import { CelebrationOverlay } from "./components/CelebrationOverlay.jsx";
@@ -44,6 +45,7 @@ function Shell() {
   const sound = useSound(data.settings.soundEnabled);
   const notifications = useNotifications(data.settings.notificationsEnabled);
   useStreakRiskReminder(data.settings.notificationsEnabled, { streak: data.game.streak, lastActiveDate: data.game.lastActiveDate, notify: notifications.notify });
+  useScheduledNamesAutoSync();
 
   const openPalette = useCallback(() => setPaletteOpen(true), []);
   const closePalette = useCallback(() => setPaletteOpen(false), []);

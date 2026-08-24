@@ -1,7 +1,7 @@
 import React, { useState } from "react";
 import { Icon } from "../../lib/Icon.jsx";
 import { IconButton } from "../primitives.jsx";
-import { connectGoogleAccount, finalizeConnection, abandonPendingConnection } from "../../lib/google/sheetConnectionsApi.js";
+import { connectGoogleAccount, finalizeConnection, abandonPendingConnection, triggerSync } from "../../lib/google/sheetConnectionsApi.js";
 import { openSheetPicker } from "../../lib/google/googlePicker.js";
 import { listSheetTabs, getHeaderRow } from "../../lib/google/sheetsApi.js";
 
@@ -88,6 +88,10 @@ export function ConnectSheetWizard({ onClose, onConnected }) {
         sheetTab: selectedTab,
         columnMapping: { name: nameColumn, date: dateColumn },
       });
+      // Best-effort — the connection itself is already saved regardless of
+      // whether this first sync succeeds immediately; useScheduledNamesAutoSync
+      // will pick it up shortly after either way (last_synced_at is still null).
+      triggerSync(connectionId).catch(() => {});
       onConnected?.(connectionId);
     } catch (err) {
       setError(err.message || "Could not save this connection.");
