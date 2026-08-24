@@ -266,6 +266,9 @@ Deno.serve(async (req) => {
     return json({ ok: true, added, updated, removed: toRemove.length, skippedInvalidDate, createdIdColumn: creatingIdColumn });
   } catch (err) {
     const message = String((err as any)?.message || err);
+    // Safe: our own error text / Google's error + error_description
+    // fields — never a client_secret, access token, or refresh token.
+    console.error("[sheets-sync]", message);
     if (connectionId) {
       await admin.from("sheet_connections").update({ sync_state: "error", last_sync_error: message }).eq("id", connectionId).catch(() => {});
     }

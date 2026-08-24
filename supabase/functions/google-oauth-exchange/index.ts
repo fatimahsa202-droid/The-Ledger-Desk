@@ -116,6 +116,12 @@ Deno.serve(async (req) => {
       { headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );
   } catch (err) {
-    return new Response(JSON.stringify({ error: String(err?.message || err) }), { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+    const message = String(err?.message || err);
+    // Safe: this is our own error text / Google's error + error_description
+    // fields, which describe the failure reason — never the client_secret,
+    // code, or any token value. Shows up in Supabase's Edge Function logs
+    // even independent of whether the frontend surfaces it.
+    console.error("[google-oauth-exchange]", message);
+    return new Response(JSON.stringify({ error: message }), { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } });
   }
 });

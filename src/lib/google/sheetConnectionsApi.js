@@ -7,6 +7,27 @@ function requireClient() {
   return client;
 }
 
+/**
+ * supabase-js's functions.invoke() gives a generic error.message on a
+ * non-2xx response ("Edge Function returned a non-2xx status code") — the
+ * actual JSON body our functions return (the real, diagnosable message)
+ * only lives on error.context, a Response object that has to be read
+ * separately. Without this, every real failure reason from
+ * google-oauth-exchange/sheets-sync was being swallowed into that one
+ * generic string, which is exactly why it wasn't visible anywhere.
+ */
+async function describeInvokeError(error) {
+  if (error?.context && typeof error.context.json === "function") {
+    try {
+      const body = await error.context.clone().json();
+      if (body?.error) return body.error;
+    } catch {
+      /* body wasn't JSON — fall through to the generic message below */
+    }
+  }
+  return error?.message || "Request failed.";
+}
+
 /** Runs the popup consent flow, then exchanges the resulting code server-side. Returns { connectionId, accessToken, expiresAt } — never a refresh token, which stays server-only. */
 export async function connectGoogleAccount() {
   const client = requireClient();
@@ -14,7 +35,7 @@ export async function connectGoogleAccount() {
   const { data, error } = await client.functions.invoke("google-oauth-exchange", {
     body: { code, redirectUri: REDIRECT_URI_FOR_EXCHANGE },
   });
-  if (error) throw new Error(error.message || "Google authorization failed.");
+  if (error) throw new Error(await describeInvokeError(error));
   if (data?.error) throw new Error(data.error);
   return data; // { connectionId, accessToken, expiresAt }
 }
@@ -53,7 +74,7 @@ export async function disconnectConnection(connectionId) {
 export async function triggerSync(connectionId) {
   const client = requireClient();
   const { data, error } = await client.functions.invoke("sheets-sync", { body: { connectionId } });
-  if (error) throw new Error(error.message || "Sync failed.");
+  if (error) throw new Error(await describeInvokeError(error));
   if (data?.error) throw new Error(data.error);
   return data;
 }
