@@ -27,7 +27,7 @@ function iconForActivity(type) {
 export function TodayPanel({ navigate, selectedCategory, dayStart, dayEnd, now }) {
   const {
     game, categoriesFinished, categoriesNeedingAttention,
-    activeTimer, liveSecondsRecon, liveSecondsMig, stopActiveTimer,
+    activeTimer, liveSecondsRecon, liveSecondsMig, liveSecondsOcc, stopActiveTimer,
     activityLog, dailyGoalMet, challenge, challengeMet, settings,
     monthlyData, occurrences, taskDefinitions, migration,
     setOccurrenceStatus,
@@ -50,7 +50,9 @@ export function TodayPanel({ navigate, selectedCategory, dayStart, dayEnd, now }
 
   const nextUpTask = categoriesNeedingAttention.length > 0 ? categoriesNeedingAttention[0].id : null;
   const activeTimerTask = activeTimer
-    ? activeTimer.kind === "recon" ? TASK_BY_ID[activeTimer.taskId] : migration.tasks.find((t) => t.id === activeTimer.taskId)
+    ? activeTimer.kind === "recon" ? TASK_BY_ID[activeTimer.taskId]
+      : activeTimer.kind === "migration" ? migration.tasks.find((t) => t.id === activeTimer.taskId)
+      : occurrences[activeTimer.taskId]
     : null;
 
   return (
@@ -123,11 +125,25 @@ export function TodayPanel({ navigate, selectedCategory, dayStart, dayEnd, now }
                     <div className="text-xs fw-semibold muted">TIMER RUNNING</div>
                     <div className="text-lg fw-bold mt-1">{activeTimerTask?.name || "Untitled task"}</div>
                   </div>
-                  <div className="mono text-2xl fw-bold">{formatHMS(activeTimer.kind === "recon" ? liveSecondsRecon(activeTimer.taskId, activeTimer.monthKey) : liveSecondsMig(activeTimerTask || {}))}</div>
+                  <div className="mono text-2xl fw-bold">
+                    {formatHMS(
+                      activeTimer.kind === "recon" ? liveSecondsRecon(activeTimer.taskId, activeTimer.monthKey)
+                        : activeTimer.kind === "migration" ? liveSecondsMig(activeTimerTask || {})
+                        : liveSecondsOcc(activeTimer.taskId)
+                    )}
+                  </div>
                 </div>
                 <div className="flex gap-2 mt-3">
                   <button className="btn btn-warn btn-sm" onClick={stopActiveTimer}><Icon name="pause" size={13} /> Pause</button>
-                  <button className="btn btn-secondary btn-sm" onClick={() => navigate(activeTimer.kind === "recon" ? "categories" : "migration", activeTimer.kind === "recon" ? activeTimer.taskId : undefined)}>
+                  <button
+                    className="btn btn-secondary btn-sm"
+                    onClick={() => navigate(
+                      activeTimer.kind === "migration" ? "migration" : "categories",
+                      activeTimer.kind === "recon" ? activeTimer.taskId
+                        : activeTimer.kind === "occurrence" ? occurrences[activeTimer.taskId]?.definitionId
+                        : undefined
+                    )}
+                  >
                     Open task
                   </button>
                 </div>

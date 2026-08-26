@@ -14,7 +14,7 @@ import { useAppData } from "../store/AppDataProvider.jsx";
 
 const dateLabel = (ts) => (ts ? new Date(ts).toLocaleDateString(undefined, { weekday: "short", day: "2-digit", month: "short" }) : null);
 
-function OccurrenceRow({ occ, onToggleStatus, onNotesCommit }) {
+function OccurrenceRow({ occ, onToggleStatus, onNotesCommit, running, seconds, onStartTimer, onStopTimer, onResetTimer }) {
   const [expanded, setExpanded] = useState(false);
   const overdue = occ.status !== "done" && occ.dueDate != null && occ.dueDate < Date.now();
   return (
@@ -28,6 +28,7 @@ function OccurrenceRow({ occ, onToggleStatus, onNotesCommit }) {
           <Icon name={expanded ? "chevron-down" : "chevron-right"} size={12} className="muted shrink-0" />
           <span className="mono">{dateLabel(occ.dueDate) || occ.periodKey}</span>
           {overdue && <Pill tone="rust" outline>Overdue</Pill>}
+          {running && <Icon name="clock" size={12} style={{ color: "var(--amber)" }} className="shrink-0" />}
         </button>
         <span className="flex items-center gap-2 shrink-0">
           <Pill tone={occ.status === "done" ? "green" : "rust"} outline={occ.status !== "done"}>{occ.status === "done" ? "Completed" : "Pending"}</Pill>
@@ -36,7 +37,18 @@ function OccurrenceRow({ occ, onToggleStatus, onNotesCommit }) {
       </div>
       {expanded && (
         <div style={{ padding: "0 10px 10px 28px" }}>
+          <div className="mb-3">
+            <TaskTimer seconds={seconds} running={running} onStart={onStartTimer} onStop={onStopTimer} onReset={onResetTimer} compact />
+          </div>
           <NotesField id={occ.id} value={occ.notes} placeholder="Notes for this occurrence..." onCommit={(val) => onNotesCommit(occ.id, val)} />
+          {occ.sessions && occ.sessions.length > 0 && (
+            <div className="mt-3">
+              <div className="text-xs fw-semibold mb-2 flex items-center gap-1" style={{ color: "var(--muted)" }}>
+                <Icon name="history" size={12} /> WORK SESSIONS
+              </div>
+              <SessionLog sessions={occ.sessions} />
+            </div>
+          )}
         </div>
       )}
     </div>
@@ -51,7 +63,10 @@ function OccurrenceRow({ occ, onToggleStatus, onNotesCommit }) {
  * its own status and notes. monthlyData is never read or written here.
  */
 function OccurrenceDrivenDetailPanel({ task, monthKey }) {
-  const { occurrences, setOccurrenceStatus, updateOccurrenceNotes, isTaskFavorite, isTaskPinned, toggleFavorite, togglePinned } = useAppData();
+  const {
+    occurrences, setOccurrenceStatus, updateOccurrenceNotes, isTaskFavorite, isTaskPinned, toggleFavorite, togglePinned,
+    activeTimer, startTimer, stopActiveTimer, resetTimer, liveSecondsOcc,
+  } = useAppData();
   const occs = useMemo(() => occurrencesForTaskInMonth(occurrences, task.id, monthKey), [occurrences, task.id, monthKey]);
   const rollup = useMemo(() => computeBoardRollup(occs), [occs]);
   const monthLabel = monthKeyLabel(monthKey);
@@ -102,6 +117,11 @@ function OccurrenceDrivenDetailPanel({ task, monthKey }) {
             occ={occ}
             onToggleStatus={(o) => setOccurrenceStatus(o.id, o.status === "done" ? "pending" : "done")}
             onNotesCommit={updateOccurrenceNotes}
+            running={!!(activeTimer && activeTimer.kind === "occurrence" && activeTimer.taskId === occ.id)}
+            seconds={liveSecondsOcc(occ.id)}
+            onStartTimer={() => startTimer("occurrence", occ.id, null)}
+            onStopTimer={stopActiveTimer}
+            onResetTimer={() => resetTimer("occurrence", occ.id, null)}
           />
         ))}
       </div>
