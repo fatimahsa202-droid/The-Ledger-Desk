@@ -400,7 +400,11 @@ function TaskEditModal({ def, categories, monthlyData, workingDays, onClose, onS
 
   const isGraduated = !isNew && def.legacyMonthlyStorage && !!def.graduatedFrom;
   const isUngraduatedLegacy = !isNew && def.legacyMonthlyStorage && !def.graduatedFrom;
-  const hasScheduleEditor = isNew || isGraduated || (isUngraduatedLegacy && graduating);
+  // New tasks start out exactly like a legacy task: plain monthly cadence,
+  // no schedule editor at creation. A recurring schedule can be turned on
+  // afterward from Edit, the same "Set a recurring schedule" path any
+  // existing legacy task already has (see isUngraduatedLegacy below).
+  const hasScheduleEditor = isGraduated || (isUngraduatedLegacy && graduating);
 
   const quickDate = (ts) => { setGraduationDate(toDateInputValue(ts)); setOverlapConfirm(null); };
 
@@ -484,6 +488,12 @@ function TaskEditModal({ def, categories, monthlyData, workingDays, onClose, onS
               <div className="mb-4" style={{ padding: 12, background: "var(--bg-soft)", border: "1px dashed var(--border)", borderRadius: 8 }}>
                 <div className="text-sm dim mb-2">This task follows your regular monthly close cycle and doesn't have a recurring schedule set yet.</div>
                 <button type="button" className="btn btn-secondary btn-sm" onClick={() => setGraduating(true)}>Set a recurring schedule</button>
+              </div>
+            )}
+
+            {isNew && (
+              <div className="mb-4" style={{ padding: 12, background: "var(--bg-soft)", border: "1px dashed var(--border)", borderRadius: 8 }}>
+                <div className="text-sm dim">New tasks start on your regular monthly close cycle, exactly like your existing tasks. You can set a recurring schedule for it later from Edit, once it's saved.</div>
               </div>
             )}
 

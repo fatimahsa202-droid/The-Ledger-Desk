@@ -222,6 +222,14 @@ export function AppDataProvider({ children }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loaded, taskDefinitions, settings.workingDays]);
 
+  // A newly created task starts out exactly like one of the original 53:
+  // legacyMonthlyStorage: true, plain monthly cadence, no recurrence rule.
+  // That routes it through the same monthlyData + TaskTimer path as every
+  // legacy task (see isOccurrenceDrivenForMonth/TaskDetailPanel) — same
+  // Timer, same Start/Pause/Resume/Stop, same persistence, same data
+  // shape. A user can still opt a task into the occurrence/recurrence
+  // engine later via Manage Tasks' "Set a recurring schedule" (graduation)
+  // flow, exactly as they can for any built-in legacy task.
   const addTaskDefinition = useCallback(
     (input) => {
       const id = uid();
@@ -230,17 +238,17 @@ export function AppDataProvider({ children }) {
         name: (input.name || "").trim(),
         categoryId: input.categoryId,
         priority: input.priority || "normal",
-        frequency: input.frequency || "monthly",
-        monthlyRule: input.monthlyRule || { kind: "none" },
-        weekdays: input.weekdays || [],
-        everyNWeeks: input.everyNWeeks || 1,
-        yearlyRule: input.yearlyRule || { month: 0, day: 1 },
-        customRule: input.customRule || { everyN: 1, unit: "days" },
-        dueDate: input.dueDate || null,
+        frequency: "monthly",
+        monthlyRule: { kind: "none" },
+        weekdays: [],
+        everyNWeeks: 1,
+        yearlyRule: { month: 0, day: 1 },
+        customRule: { everyN: 1, unit: "days" },
+        dueDate: null,
         notes: input.notes || "",
         timerEligible: input.timerEligible !== false,
         isBuiltIn: false,
-        legacyMonthlyStorage: false,
+        legacyMonthlyStorage: true,
         archived: false,
         createdAt: Date.now(),
         updatedAt: Date.now(),
