@@ -45,8 +45,9 @@ export function buildAccountingSessions(monthlyData, occurrences, taskDefinition
     });
   });
 
-  // Occurrence-level sessions, written by the per-occurrence timer in
-  // TaskDetailPanel.jsx (see task_occurrences.sessions).
+  // Occurrence-level sessions: schema supports them (see task_occurrences.sessions),
+  // but no timer UI writes to them yet — included for correctness/forward-compat,
+  // effectively a no-op today.
   Object.values(occurrences || {}).forEach((occ) => {
     const def = taskById[occ.definitionId];
     (occ.sessions || []).filter(isRealSession).forEach((s) => {
@@ -65,9 +66,9 @@ export function sumSeconds(sessionsList) {
   return sessionsList.reduce((sum, s) => sum + (s.duration || 0), 0);
 }
 
-/** Elapsed seconds an active accounting timer (reconciliation or occurrence — migration stays excluded, matching the rest of this module) contributes to a range — only nonzero when the range actually contains "now" (i.e. it's the live/current period), capped to the range. */
+/** Elapsed seconds an active reconciliation timer contributes to a range — only nonzero when the range actually contains "now" (i.e. it's the live/current period), capped to the range. */
 export function liveElapsedInRange(activeTimer, nowMs, fromMs, toMs) {
-  if (!activeTimer || (activeTimer.kind !== "recon" && activeTimer.kind !== "occurrence")) return 0;
+  if (!activeTimer || activeTimer.kind !== "recon") return 0;
   if (nowMs < fromMs || nowMs > toMs) return 0;
   const start = Math.max(activeTimer.startedAt, fromMs);
   return Math.max(0, Math.floor((nowMs - start) / 1000));

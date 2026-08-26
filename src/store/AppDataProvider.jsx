@@ -357,6 +357,19 @@ export function AppDataProvider({ children }) {
     [setCategoryDefs]
   );
 
+  const setOccurrenceStatus = useCallback(
+    (occId, status) => {
+      setOccurrences((prev) => {
+        const o = prev[occId];
+        if (!o) return prev;
+        const next = { ...o, status, completedAt: status === "done" ? Date.now() : null, updatedAt: Date.now() };
+        cloudSync.pushOccurrence(next);
+        return { ...prev, [occId]: next };
+      });
+    },
+    [setOccurrences]
+  );
+
   const updateOccurrenceNotes = useCallback(
     (occId, notes) => {
       setOccurrences((prev) => {
@@ -509,26 +522,10 @@ export function AppDataProvider({ children }) {
           tasks: mg.tasks.map((t) => (t.id === prev.taskId ? { ...t, timeSeconds: (t.timeSeconds || 0) + elapsed, sessions: [...(t.sessions || []), session] } : t)),
         }));
         cloudSync.pushSession(session, "migration", prev.taskId, null);
-      } else if (prev.kind === "occurrence") {
-        // Occurrence timer sessions live inside the occurrence row itself
-        // (task_occurrences.time_seconds / .sessions) rather than the
-        // work_sessions table — that table's source_type column is
-        // constrained to ('reconciliation','migration'), so pushSession()
-        // would fail here; pushOccurrence() already carries this data.
-        setOccurrences((occ) => {
-          const o = occ[prev.taskId];
-          if (!o) return occ;
-          const next = { ...o, timeSeconds: (o.timeSeconds || 0) + elapsed, sessions: [...(o.sessions || []), session], updatedAt: Date.now() };
-          cloudSync.pushOccurrence(next);
-          if (elapsed >= 5) {
-            logActivity({ type: "session", taskId: prev.taskId, taskName: o.name, duration: elapsed, message: `Logged ${Math.round(elapsed / 60)}m on ${o.name || "a task"}` });
-          }
-          return { ...occ, [prev.taskId]: next };
-        });
       }
       return null;
     });
-  }, [setActiveTimer, setMonthlyData, setMigration, setOccurrences, logActivity]);
+  }, [setActiveTimer, setMonthlyData, setMigration, logActivity]);
 
   const startTimer = useCallback(
     (kind, taskId, monthKey) => {
@@ -542,23 +539,11 @@ export function AppDataProvider({ children }) {
   const resetTimer = useCallback(
     (kind, taskId, monthKey) => {
       setActiveTimer((prev) => (prev && prev.kind === kind && prev.taskId === taskId && prev.monthKey === (monthKey || null) ? null : prev));
-      if (kind === "recon") {
-        updateEntry(taskId, monthKey, { timeSeconds: 0, sessions: [] });
-        cloudSync.clearSessionsFor("reconciliation", taskId, monthKey);
-      } else if (kind === "migration") {
-        updateMigTask(taskId, { timeSeconds: 0, sessions: [] });
-        cloudSync.clearSessionsFor("migration", taskId, null);
-      } else if (kind === "occurrence") {
-        setOccurrences((prev) => {
-          const o = prev[taskId];
-          if (!o) return prev;
-          const next = { ...o, timeSeconds: 0, sessions: [], updatedAt: Date.now() };
-          cloudSync.pushOccurrence(next);
-          return { ...prev, [taskId]: next };
-        });
-      }
+      if (kind === "recon") updateEntry(taskId, monthKey, { timeSeconds: 0, sessions: [] });
+      else updateMigTask(taskId, { timeSeconds: 0, sessions: [] });
+      cloudSync.clearSessionsFor(kind === "recon" ? "reconciliation" : "migration", taskId, kind === "recon" ? monthKey : null);
     },
-    [setActiveTimer, updateEntry, updateMigTask, setOccurrences]
+    [setActiveTimer, updateEntry, updateMigTask]
   );
 
   const liveSecondsRecon = useCallback(
@@ -583,34 +568,6 @@ export function AppDataProvider({ children }) {
       // eslint-disable-next-line
     },
     [activeTimer, tick]
-  );
-
-  const liveSecondsOcc = useCallback(
-    (occId) => {
-      const base = (occurrences[occId] && occurrences[occId].timeSeconds) || 0;
-      if (activeTimer && activeTimer.kind === "occurrence" && activeTimer.taskId === occId) {
-        return base + Math.floor((Date.now() - activeTimer.startedAt) / 1000);
-      }
-      return base;
-      // eslint-disable-next-line
-    },
-    [occurrences, activeTimer, tick]
-  );
-
-  const setOccurrenceStatus = useCallback(
-    (occId, status) => {
-      if (status === "done" && activeTimer && activeTimer.kind === "occurrence" && activeTimer.taskId === occId) {
-        stopActiveTimer();
-      }
-      setOccurrences((prev) => {
-        const o = prev[occId];
-        if (!o) return prev;
-        const next = { ...o, status, completedAt: status === "done" ? Date.now() : null, updatedAt: Date.now() };
-        cloudSync.pushOccurrence(next);
-        return { ...prev, [occId]: next };
-      });
-    },
-    [setOccurrences, activeTimer, stopActiveTimer]
   );
 
   const setStatus = useCallback(
@@ -880,7 +837,7 @@ export function AppDataProvider({ children }) {
     updateEntry, addSource, removeSource, updateMigTask,
     setStatus, setMigStatus,
     startTimer, stopActiveTimer, resetTimer,
-    liveSecondsRecon, liveSecondsMig, liveSecondsOcc,
+    liveSecondsRecon, liveSecondsMig,
     toggleFavorite, togglePinned, touchRecent, isTaskFavorite, isTaskPinned,
     applyMigrationChange, addMigTask, deleteMigTask,
     migrationDone, migrationRemaining, migrationPercent,

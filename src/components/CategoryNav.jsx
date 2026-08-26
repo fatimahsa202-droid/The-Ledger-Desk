@@ -83,10 +83,7 @@ export function CategoryNav({ monthKey, selectedTaskId, onSelect, expandedCats, 
                       rightLabel = timeSeconds > 0 ? formatHours(timeSeconds) : null;
                     }
                     const active = selectedTaskId === t.id;
-                    const running = activeTimer && (
-                      (activeTimer.kind === "recon" && activeTimer.taskId === t.id && activeTimer.monthKey === monthKey) ||
-                      (activeTimer.kind === "occurrence" && occurrences[activeTimer.taskId]?.definitionId === t.id)
-                    );
+                    const running = activeTimer && activeTimer.kind === "recon" && activeTimer.taskId === t.id && activeTimer.monthKey === monthKey;
                     const priority = def?.priority || "normal";
                     return (
                       <button
