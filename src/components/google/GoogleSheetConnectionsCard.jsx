@@ -33,6 +33,7 @@ function ConnectionRow({ conn, onChange }) {
   };
 
   const handleDisconnect = async () => {
+    if (!window.confirm(`Disconnect "${conn.display_name || conn.spreadsheet_name}"? Its names will stop appearing on your Calendar. Nothing is deleted — history and completion status are kept, and you can reconnect this Sheet later.`)) return;
     setBusy(true);
     await disconnectConnection(conn.id);
     await onChange();
@@ -43,6 +44,9 @@ function ConnectionRow({ conn, onChange }) {
     <div className="flex items-center justify-between gap-3 flex-wrap" style={{ padding: "12px 0", borderBottom: "1px solid var(--border)" }}>
       <div className="min-w-0">
         <div className="text-sm fw-semibold truncate">{conn.display_name || conn.spreadsheet_name}</div>
+        <div className="text-xs muted mt-0.5 truncate">
+          {conn.spreadsheet_name}{conn.sheet_tab ? ` · ${conn.sheet_tab}` : ""}
+        </div>
         <div className="text-xs muted mt-0.5">
           {conn.last_synced_at ? `Last synced ${relativeTime(new Date(conn.last_synced_at).getTime())}` : "Not synced yet"}
         </div>
@@ -51,6 +55,9 @@ function ConnectionRow({ conn, onChange }) {
         )}
         {conn.sync_state === "reauth_required" && (
           <div className="text-xs mt-1" style={{ color: "var(--rust)" }}>Google access needs to be renewed — disconnect and reconnect this Sheet.</div>
+        )}
+        {conn.sync_state === "error" && conn.last_sync_error && (
+          <div className="text-xs mt-1" style={{ color: "var(--rust)" }}>{conn.last_sync_error}</div>
         )}
       </div>
       <div className="flex items-center gap-2 shrink-0">

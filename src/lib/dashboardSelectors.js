@@ -29,6 +29,8 @@
  *    existing, unchanged app behavior: the month isn't over yet).
  */
 
+import { isOverdue, isOccurrenceDrivenForMonth, occurrencesForTaskInMonth, computeBoardRollup } from "./occurrenceEngine.js";
+
 const isRealSession = (s) => s && typeof s.start === "number" && typeof s.duration === "number";
 
 /** Every real work session for accounting tasks (legacy + occurrence-level), current category attribution, migration excluded. */
@@ -45,9 +47,12 @@ export function buildAccountingSessions(monthlyData, occurrences, taskDefinition
     });
   });
 
-  // Occurrence-level sessions: schema supports them (see task_occurrences.sessions),
-  // but no timer UI writes to them yet — included for correctness/forward-compat,
-  // effectively a no-op today.
+  // Occurrence-level sessions: the schema still supports task_occurrences.sessions,
+  // but the Timer is now a universal, task+month capability that always writes
+  // into monthlyData (see TaskDetailPanel.jsx) — occ.sessions is never written to
+  // by any UI and stays permanently empty. Kept here only for forward-compat with
+  // the schema; effectively a no-op today, by design (avoids ever double-counting
+  // the same tracked time from two ledgers).
   Object.values(occurrences || {}).forEach((occ) => {
     const def = taskById[occ.definitionId];
     (occ.sessions || []).filter(isRealSession).forEach((s) => {
@@ -82,20 +87,25 @@ export function occurrencesDueInRange(occurrences, fromMs, toMs, categoryId) {
   });
 }
 
-/** End of the calendar day a due-date timestamp falls on — occurrence due dates are stored at midnight of the due day, so comparing the raw timestamp against "now" would mark a same-day item overdue the instant the clock passes midnight. "Overdue" should mean the whole due day has elapsed. */
-function endOfDueDay(dueDateMs) {
-  const d = new Date(dueDateMs);
-  d.setHours(23, 59, 59, 999);
-  return d.getTime();
+/** The monthKey ("YYYY-MM") an occurrence's tracked time lives under in the universal monthlyData timer ledger — derived from its due date when it has one, or its own periodKey when it doesn't (a monthly "none"-rule occurrence's periodKey already IS its monthKey). */
+function monthKeyOfOccurrence(o) {
+  if (o.dueDate != null) {
+    const d = new Date(o.dueDate);
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+  }
+  return o.periodKey;
 }
 
 /** Core occurrence-driven KPI bundle, shared by Today/Week/Month's "Recurring Work Completion". */
-export function computeOccurrenceKPIs(occurrences, taskDefinitions, nowMs, fromMs, toMs, categoryId) {
+export function computeOccurrenceKPIs(occurrences, taskDefinitions, monthlyData, nowMs, fromMs, toMs, categoryId) {
   const due = occurrencesDueInRange(occurrences, fromMs, toMs, categoryId);
   const completed = due.filter((o) => o.status === "done");
   const remaining = due.filter((o) => o.status !== "done");
-  const overdue = remaining.filter((o) => endOfDueDay(o.dueDate) < nowMs);
-  const inProgress = remaining.filter((o) => (o.timeSeconds || 0) > 0);
+  const overdue = remaining.filter((o) => isOverdue(o.dueDate, nowMs));
+  // "In Progress" reads the universal per-task-per-month timer ledger (monthlyData) —
+  // the same ledger the Timer always writes to now, regardless of recurrence — never
+  // occ.timeSeconds, which the Timer never writes to (see buildAccountingSessions above).
+  const inProgress = remaining.filter((o) => (((monthlyData[monthKeyOfOccurrence(o)] || {})[o.definitionId]?.timeSeconds) || 0) > 0);
   const priorityById = Object.fromEntries((taskDefinitions || []).map((d) => [d.id, d.priority]));
   const highCritical = remaining.filter((o) => {
     const p = priorityById[o.definitionId] || o.priority || "normal";
@@ -140,6 +150,111 @@ export function computeLegacyOverdueForMonth(monthlyData, taskDefinitions, month
   if (monthKey >= currentMonthKey) return 0;
   const stats = computeLegacyReconciliationForMonth(monthlyData, taskDefinitions, monthKey, categoryId);
   return stats.total - stats.completed;
+}
+
+/**
+ * ============================================================================
+ * Unified statistics engine — the ONE true implementation of "how much of
+ * this month/category is done, and how many hours" across every task,
+ * legacy or occurrence-driven, built-in or user-created, graduated or not.
+ * Analytics, Reports, Achievements, and Categories' Monthly Progress all
+ * build on this (via selectors.js's thin wrappers) instead of each
+ * re-deriving their own version, so the same month can never show two
+ * different completion/hour numbers on two different screens.
+ *
+ * Explicitly, deliberately scoped the same way as the rest of this file:
+ *  - "Accounting work" = legacy (monthlyData) + occurrence-driven tasks.
+ *    Data Migration is never included (see buildAccountingSessions above) —
+ *    it's a separate workflow with its own totals, shown in Timeline only.
+ *  - Hours always come from monthlyData, the ONE universal per-task,
+ *    per-month timer ledger (see TaskDetailPanel.jsx) — never
+ *    occurrence.timeSeconds, which the Timer never writes to. This is what
+ *    makes it structurally impossible to double-count the same tracked time
+ *    from two ledgers.
+ *  - A user-created task only ever counts toward a month on/after the month
+ *    it was actually created in — adding a new task today can never change
+ *    last year's completion percentage. Built-in tasks (isBuiltIn) always
+ *    count, in every month, exactly as they always have.
+ * ============================================================================
+ */
+
+function definitionAppliesToMonth(def, monthKey) {
+  if (def.isBuiltIn || !def.createdAt) return true;
+  const c = new Date(def.createdAt);
+  const createdMonthKey = `${c.getFullYear()}-${String(c.getMonth() + 1).padStart(2, "0")}`;
+  return monthKey >= createdMonthKey;
+}
+
+/** Unified completion + time stats for one month, across every applicable task definition, optionally filtered to one category. Live-timer-aware. */
+export function computeUnifiedMonthStats(monthlyData, occurrences, taskDefinitions, monthKey, currentMonthKey, activeTimer, now, categoryId) {
+  let completed = 0, total = 0, seconds = 0, overdue = 0, inProgress = 0;
+  (taskDefinitions || [])
+    .filter((d) => !d.archived)
+    .filter((d) => !categoryId || categoryId === "all" || d.categoryId === categoryId)
+    .filter((d) => definitionAppliesToMonth(d, monthKey))
+    .forEach((def) => {
+      const entry = (monthlyData[monthKey] || {})[def.id];
+      if (isOccurrenceDrivenForMonth(def, monthKey)) {
+        const occs = occurrencesForTaskInMonth(occurrences, def.id, monthKey);
+        const rollup = computeBoardRollup(occs, now);
+        total += rollup.total;
+        completed += rollup.done;
+        overdue += rollup.overdue;
+        inProgress += occs.filter((o) => o.status !== "done" && (entry?.timeSeconds || 0) > 0).length;
+      } else {
+        total += 1;
+        if (entry?.status === "done") completed += 1;
+        else if (entry?.status === "in-progress") inProgress += 1;
+        if (entry?.status !== "done" && monthKey < currentMonthKey) overdue += 1;
+      }
+      seconds += entry?.timeSeconds || 0;
+      if (activeTimer && activeTimer.kind === "recon" && activeTimer.taskId === def.id && activeTimer.monthKey === monthKey) {
+        seconds += Math.floor((now - activeTimer.startedAt) / 1000);
+      }
+    });
+  return { completed, total, seconds, overdue, inProgress, percent: total ? Math.round((completed / total) * 100) : 0 };
+}
+
+/** Unified per-month map for a list of {key} month objects (e.g. the fixed year-to-date MONTHS list) — replaces the old legacy-only computeMonthStats. */
+export function computeUnifiedMonthMap(monthlyData, occurrences, taskDefinitions, months, currentMonthKey, activeTimer, now) {
+  const map = {};
+  (months || []).forEach((m) => {
+    map[m.key] = computeUnifiedMonthStats(monthlyData, occurrences, taskDefinitions, m.key, currentMonthKey, activeTimer, now, null);
+  });
+  return map;
+}
+
+/**
+ * Resolves one task's status + tracked seconds for a Reports/CSV-style row
+ * in one month — used by Reports.jsx's printed Task History and
+ * exportCsv.js, so both include every task (not just the original 53) the
+ * same way the rest of this file does. Returns null when nothing should be
+ * shown at all: an occurrence-driven task with zero occurrences scheduled
+ * that month (matches the Task Board's own "nothing scheduled" rule —
+ * never a phantom row for a month the task wasn't even due in).
+ */
+export function resolveTaskReportRow(monthlyData, occurrences, def, monthKey) {
+  const entry = (monthlyData[monthKey] || {})[def.id];
+  const seconds = entry?.timeSeconds || 0;
+  if (isOccurrenceDrivenForMonth(def, monthKey)) {
+    const occs = occurrencesForTaskInMonth(occurrences, def.id, monthKey);
+    if (occs.length === 0) return null;
+    const rollup = computeBoardRollup(occs);
+    const status = rollup.total > 0 && rollup.done === rollup.total ? "done" : rollup.done > 0 ? "in-progress" : "pending";
+    return { status, seconds };
+  }
+  return { status: entry?.status || "pending", seconds };
+}
+
+/** Unified per-category breakdown for one month — replaces the old legacy-only, static-CATEGORIES-only computeCategoryStatsForMonth. */
+export function computeUnifiedCategoryStatsForMonth(monthlyData, occurrences, taskDefinitions, categoryDefs, monthKey, currentMonthKey, activeTimer, now) {
+  return (categoryDefs || [])
+    .filter((c) => !c.archived)
+    .map((cat) => ({
+      id: cat.id,
+      name: cat.name,
+      ...computeUnifiedMonthStats(monthlyData, occurrences, taskDefinitions, monthKey, currentMonthKey, activeTimer, now, cat.id),
+    }));
 }
 
 /**

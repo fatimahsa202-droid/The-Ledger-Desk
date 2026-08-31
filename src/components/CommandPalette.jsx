@@ -1,9 +1,15 @@
 import React, { useState, useMemo, useEffect, useRef } from "react";
 import { Icon } from "../lib/Icon.jsx";
 import { NAV_ITEMS } from "../lib/nav.js";
-import { ALL_TASKS } from "../data/categories.js";
+import { useAppData } from "../store/AppDataProvider.jsx";
 
 export function CommandPalette({ open, onClose, onNavigate, onSelectTask }) {
+  const { effectiveCategories } = useAppData();
+  // Live task library (built-in + user-created + renamed/re-categorized),
+  // not the frozen ALL_TASKS constant — otherwise a task created or edited
+  // via Manage Tasks is invisible to ⌘K even though it's fully usable on
+  // the Task Board.
+  const allTasks = useMemo(() => effectiveCategories.flatMap((c) => c.tasks), [effectiveCategories]);
   const [query, setQuery] = useState("");
   const inputRef = useRef(null);
 
@@ -23,7 +29,7 @@ export function CommandPalette({ open, onClose, onNavigate, onSelectTask }) {
       icon: n.icon,
     }));
     const tasks = q
-      ? ALL_TASKS.filter((t) => t.name.toLowerCase().includes(q) || t.categoryName.toLowerCase().includes(q)).slice(0, 8).map((t) => ({
+      ? allTasks.filter((t) => t.name.toLowerCase().includes(q) || t.categoryName.toLowerCase().includes(q)).slice(0, 8).map((t) => ({
           kind: "task",
           id: t.id,
           label: t.name,
@@ -32,7 +38,7 @@ export function CommandPalette({ open, onClose, onNavigate, onSelectTask }) {
         }))
       : [];
     return [...pages.slice(0, q ? 4 : 8), ...tasks];
-  }, [query]);
+  }, [query, allTasks]);
 
   const [activeIdx, setActiveIdx] = useState(0);
   useEffect(() => setActiveIdx(0), [query]);

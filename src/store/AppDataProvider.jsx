@@ -9,9 +9,8 @@ import { DEFAULT_GAME, DEFAULT_MIGRATION, DEFAULT_SETTINGS, DEFAULT_TASK_DEFINIT
 import { cloudSync } from "../lib/cloud/CloudSyncEngine.js";
 import { buildEffectiveCategories, definitionSafeToDelete, categorySafeToDelete } from "../data/taskDefinitions.js";
 import { ensureOccurrences, findRecalculableBusinessDayOccurrences, recalculateBusinessDayOccurrences } from "../lib/occurrenceEngine.js";
+import { computeCompletedInRange, computeUnifiedMonthMap, computeUnifiedCategoryStatsForMonth } from "../lib/dashboardSelectors.js";
 import {
-  computeMonthStats,
-  computeCategoryStatsForMonth,
   flattenSessions,
   computeSessionStats,
   taskTotals,
@@ -19,7 +18,6 @@ import {
   monthBestWorst,
   categoriesAttentionSplit,
   todayTotals,
-  completedTodayCount,
   inProgressCount,
   remainingCount,
   estimatedTimeRemaining,
@@ -520,7 +518,10 @@ export function AppDataProvider({ children }) {
           };
         });
         cloudSync.pushSession(session, "reconciliation", prev.taskId, prev.monthKey);
-        const task = TASK_BY_ID[prev.taskId];
+        // Live taskDefinitions, not the static original-53-only TASK_BY_ID —
+        // otherwise any custom/graduated task's activity message silently
+        // degrades to "a task" instead of its real name.
+        const task = taskDefinitions.find((d) => d.id === prev.taskId) || TASK_BY_ID[prev.taskId];
         if (elapsed >= 5) {
           logActivity({ type: "session", taskId: prev.taskId, taskName: task?.name, duration: elapsed, message: `Logged ${Math.round(elapsed / 60)}m on ${task?.name || "a task"}` });
         }
@@ -533,7 +534,7 @@ export function AppDataProvider({ children }) {
       }
       return null;
     });
-  }, [setActiveTimer, setMonthlyData, setMigration, logActivity]);
+  }, [setActiveTimer, setMonthlyData, setMigration, logActivity, taskDefinitions]);
 
   const startTimer = useCallback(
     (kind, taskId, monthKey) => {
@@ -585,14 +586,15 @@ export function AppDataProvider({ children }) {
         stopActiveTimer();
       }
       updateEntry(taskId, monthKey, { status, completedAt: status === "done" ? Date.now() : null });
+      const taskName = taskDefinitions.find((d) => d.id === taskId)?.name || TASK_BY_ID[taskId]?.name;
       if (status === "done" && prevStatus !== "done") {
-        awardXP(XP_RULES.taskReconciled, `${TASK_BY_ID[taskId] ? TASK_BY_ID[taskId].name : "Task"} reconciled`);
-        logActivity({ type: "status", taskId, monthKey, message: `Reconciled ${TASK_BY_ID[taskId]?.name || "a task"}` });
+        awardXP(XP_RULES.taskReconciled, `${taskName || "Task"} reconciled`);
+        logActivity({ type: "status", taskId, monthKey, message: `Reconciled ${taskName || "a task"}` });
       } else if (status !== prevStatus) {
-        logActivity({ type: "status", taskId, monthKey, message: `${TASK_BY_ID[taskId]?.name || "Task"} marked ${status.replace("-", " ")}` });
+        logActivity({ type: "status", taskId, monthKey, message: `${taskName || "Task"} marked ${status.replace("-", " ")}` });
       }
     },
-    [monthlyData, activeTimer, stopActiveTimer, updateEntry, awardXP, logActivity]
+    [monthlyData, activeTimer, stopActiveTimer, updateEntry, awardXP, logActivity, taskDefinitions]
   );
 
   const setMigStatus = useCallback(
@@ -669,19 +671,39 @@ export function AppDataProvider({ children }) {
 
   /* ---------------- derived stats ---------------- */
   const now = Date.now();
-  const monthStats = useMemo(() => computeMonthStats(monthlyData, activeTimer, now), [monthlyData, activeTimer, tick]); // eslint-disable-line
-  const categoryStatsCurrentMonth = useMemo(() => computeCategoryStatsForMonth(monthlyData, CURRENT_MONTH_KEY), [monthlyData]);
-  const sessions = useMemo(() => flattenSessions(monthlyData, migration), [monthlyData, migration]);
+  const monthStats = useMemo(
+    () => computeUnifiedMonthMap(monthlyData, occurrences, taskDefinitions, MONTHS, CURRENT_MONTH_KEY, activeTimer, now),
+    [monthlyData, occurrences, taskDefinitions, activeTimer, tick] // eslint-disable-line
+  );
+  const categoryStatsCurrentMonth = useMemo(
+    () => computeUnifiedCategoryStatsForMonth(monthlyData, occurrences, taskDefinitions, categoryDefs, CURRENT_MONTH_KEY, CURRENT_MONTH_KEY, activeTimer, now),
+    [monthlyData, occurrences, taskDefinitions, categoryDefs, activeTimer, tick] // eslint-disable-line
+  );
+  const sessions = useMemo(() => flattenSessions(monthlyData, migration, taskDefinitions, categoryDefs), [monthlyData, migration, taskDefinitions, categoryDefs]);
   const sessionStats = useMemo(() => computeSessionStats(sessions), [sessions]);
   const totals = useMemo(() => taskTotals(monthlyData), [monthlyData]);
-  const { longest: longestTask, fastest: fastestTask } = useMemo(() => longestAndFastestTasks(monthlyData), [monthlyData]);
+  const { longest: longestTask, fastest: fastestTask } = useMemo(() => longestAndFastestTasks(monthlyData, taskDefinitions), [monthlyData, taskDefinitions]);
   const { best: bestMonth, worst: worstMonth } = useMemo(() => monthBestWorst(monthStats), [monthStats]);
   const { finished: categoriesFinished, needsAttention: categoriesNeedingAttention } = useMemo(
     () => categoriesAttentionSplit(categoryStatsCurrentMonth),
     [categoryStatsCurrentMonth]
   );
   const today = useMemo(() => todayTotals(sessions), [sessions, tick]); // eslint-disable-line
-  const completedToday = useMemo(() => completedTodayCount(monthlyData, migration.tasks), [monthlyData, migration.tasks]);
+  // "Completed today" for the daily goal / XP reward: legacy + occurrence-driven
+  // accounting work — the exact same occurrence-inclusive, migration-excluded
+  // rule Dashboard V2's TodayPanel already uses for its own local ring/list, so
+  // the ring, the "goal reached" text, and the XP reward always agree, no
+  // matter whether today's completions came from a recurring/graduated task or
+  // a plain monthly one. Migration is deliberately excluded here (as it is
+  // everywhere else "accounting work" is totaled — see dashboardSelectors.js)
+  // rather than blended in, matching how the app has always kept these two
+  // workflows' numbers separate.
+  const dayStart = useMemo(() => { const d = new Date(); d.setHours(0, 0, 0, 0); return d.getTime(); }, [tick]); // eslint-disable-line
+  const dayEnd = useMemo(() => { const d = new Date(); d.setHours(23, 59, 59, 999); return d.getTime(); }, [tick]); // eslint-disable-line
+  const completedToday = useMemo(
+    () => computeCompletedInRange(monthlyData, occurrences, taskDefinitions, dayStart, dayEnd, null),
+    [monthlyData, occurrences, taskDefinitions, dayStart, dayEnd]
+  );
   const inProgressThisMonth = useMemo(() => inProgressCount(monthlyData, CURRENT_MONTH_KEY), [monthlyData]);
   const remainingThisMonth = useMemo(() => remainingCount(monthlyData, CURRENT_MONTH_KEY), [monthlyData]);
   const estTimeRemaining = useMemo(() => estimatedTimeRemaining(monthlyData, CURRENT_MONTH_KEY), [monthlyData]);
@@ -703,8 +725,8 @@ export function AppDataProvider({ children }) {
   }, [monthStats]);
 
   const categoryEverCompleted = useCallback(
-    (categoryId) => MONTHS.some((m) => computeCategoryStatsForMonth(monthlyData, m.key).find((c) => c.id === categoryId)?.percent === 100),
-    [monthlyData]
+    (categoryId) => MONTHS.some((m) => computeUnifiedCategoryStatsForMonth(monthlyData, occurrences, taskDefinitions, categoryDefs, m.key, CURRENT_MONTH_KEY, activeTimer, now).find((c) => c.id === categoryId)?.percent === 100),
+    [monthlyData, occurrences, taskDefinitions, categoryDefs, activeTimer, now]
   );
 
   const fastReconciliationExists = useMemo(() => {

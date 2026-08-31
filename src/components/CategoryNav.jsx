@@ -69,17 +69,19 @@ export function CategoryNav({ monthKey, selectedTaskId, onSelect, expandedCats, 
                   {visibleTasks.map((t) => {
                     const def = defById[t.id];
                     const occDriven = isOccurrenceDrivenForMonth(def, monthKey);
-                    let tone, timeSeconds, rightLabel, overdue = 0;
+                    // Timer/Work Sessions are a universal, task+month capability now (see
+                    // TaskDetailPanel.jsx) — every task's tracked time lives in monthlyData,
+                    // regardless of whether it's occurrence-driven this month or not.
+                    const timeSeconds = getEntry(monthlyData, monthKey, t.id).timeSeconds;
+                    let tone, rightLabel, overdue = 0;
                     if (occDriven) {
                       const rollup = computeBoardRollup(occurrencesForTaskInMonth(occurrences, t.id, monthKey));
                       tone = STATUS_META[rollup.tone].tone;
-                      timeSeconds = rollup.timeSeconds;
                       overdue = rollup.overdue;
                       rightLabel = rollup.total > 1 ? `${rollup.done}/${rollup.total}` : (timeSeconds > 0 ? formatHours(timeSeconds) : null);
                     } else {
                       const e = getEntry(monthlyData, monthKey, t.id);
                       tone = STATUS_META[e.status].tone;
-                      timeSeconds = e.timeSeconds;
                       rightLabel = timeSeconds > 0 ? formatHours(timeSeconds) : null;
                     }
                     const active = selectedTaskId === t.id;

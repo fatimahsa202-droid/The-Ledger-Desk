@@ -5,31 +5,42 @@ import { CategoryNav } from "../components/CategoryNav.jsx";
 import { TaskDetailPanel } from "../components/TaskDetailPanel.jsx";
 import { ManageTasks } from "../components/ManageTasks.jsx";
 import { BarChart } from "../components/charts.jsx";
-import { CATEGORIES, ALL_TASKS, TASK_BY_ID } from "../data/categories.js";
+import { CATEGORIES, ALL_TASKS } from "../data/categories.js";
 import { MONTHS, CURRENT_MONTH_KEY, formatHours, getEntry } from "../lib/format.js";
 import { useAppData } from "../store/AppDataProvider.jsx";
-import { computeCategoryStatsForMonth, computeStatsForMonthKey } from "../lib/selectors.js";
+import { computeUnifiedCategoryStatsForMonth, computeUnifiedMonthStats } from "../lib/dashboardSelectors.js";
 import { shiftMonthKey, monthKeyLabel, monthKeyPeriodType } from "../lib/monthNav.js";
 
 export function Categories({ initialTaskId }) {
-  const { monthlyData, monthStats, activeTimer, effectiveCategories } = useAppData();
+  const { monthlyData, monthStats, activeTimer, effectiveCategories, occurrences, taskDefinitions, categoryDefs } = useAppData();
   const [subTab, setSubTab] = useState("board");
+
+  // Sourced from the editable definitions layer (not the frozen constant) so
+  // a rename/re-category shows up immediately here — including for
+  // custom/graduated tasks the static ALL_TASKS/TASK_BY_ID never contained —
+  // the same lookup effectiveCategories already builds for the nav (see
+  // CategoryNav.jsx). Computed before any state that needs it below.
+  const effectiveTaskById = useMemo(
+    () => Object.fromEntries(effectiveCategories.flatMap((c) => c.tasks).map((t) => [t.id, t])),
+    [effectiveCategories]
+  );
+
   // Task Board period — independent of the shared, year-to-date MONTHS list
   // used everywhere else (Monthly Progress below, Dashboard, Analytics,
   // Reports, gamification). Free navigation, no past/future limit — see
   // src/lib/monthNav.js.
   const [selectedMonth, setSelectedMonth] = useState(CURRENT_MONTH_KEY);
   const [progressMonth, setProgressMonth] = useState(CURRENT_MONTH_KEY);
-  const [expandedCats, setExpandedCats] = useState(() => new Set([TASK_BY_ID[initialTaskId]?.categoryId || CATEGORIES[0].id]));
+  const [expandedCats, setExpandedCats] = useState(() => new Set([effectiveTaskById[initialTaskId]?.categoryId || CATEGORIES[0].id]));
   const [selectedTaskId, setSelectedTaskId] = useState(initialTaskId || ALL_TASKS[0].id);
 
   useEffect(() => {
-    if (initialTaskId && TASK_BY_ID[initialTaskId]) {
+    if (initialTaskId && effectiveTaskById[initialTaskId]) {
       setSelectedTaskId(initialTaskId);
-      setExpandedCats((prev) => new Set(prev).add(TASK_BY_ID[initialTaskId].categoryId));
+      setExpandedCats((prev) => new Set(prev).add(effectiveTaskById[initialTaskId].categoryId));
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [initialTaskId]);
+  }, [initialTaskId, effectiveTaskById]);
 
   const toggleCat = (id) =>
     setExpandedCats((prev) => {
@@ -38,19 +49,12 @@ export function Categories({ initialTaskId }) {
       return next;
     });
 
-  // Sourced from the editable definitions layer (not the frozen constant)
-  // so a rename/re-category shows up immediately here — the same lookup
-  // effectiveCategories already builds for the nav (see CategoryNav.jsx).
-  const effectiveTaskById = useMemo(
-    () => Object.fromEntries(effectiveCategories.flatMap((c) => c.tasks).map((t) => [t.id, t])),
-    [effectiveCategories]
-  );
   const selectedTask = effectiveTaskById[selectedTaskId];
-  const categoryStatsForMonth = computeCategoryStatsForMonth(monthlyData, progressMonth);
+  const categoryStatsForMonth = computeUnifiedCategoryStatsForMonth(monthlyData, occurrences, taskDefinitions, categoryDefs, progressMonth, CURRENT_MONTH_KEY, activeTimer, Date.now());
 
   const selectedMonthStats = useMemo(
-    () => computeStatsForMonthKey(monthlyData, selectedMonth, activeTimer, Date.now()),
-    [monthlyData, selectedMonth, activeTimer]
+    () => computeUnifiedMonthStats(monthlyData, occurrences, taskDefinitions, selectedMonth, CURRENT_MONTH_KEY, activeTimer, Date.now(), null),
+    [monthlyData, occurrences, taskDefinitions, selectedMonth, activeTimer]
   );
   const selectedPeriodType = monthKeyPeriodType(selectedMonth, CURRENT_MONTH_KEY);
 

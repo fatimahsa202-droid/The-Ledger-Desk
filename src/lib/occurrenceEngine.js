@@ -41,7 +41,16 @@ function windowFor(definition, now) {
   if (definition.frequency === "monthly" || definition.frequency === "yearly") {
     to.setMonth(to.getMonth() + LOOKAHEAD_MONTHS);
   } else if (definition.frequency === "once") {
-    to.setFullYear(to.getFullYear() + 5); // a fixed one-time due date just needs to be in-window whenever it is
+    // A fixed one-time due date must still generate its occurrence even if
+    // that date is already in the past (e.g. a backdated task, or one that
+    // simply wasn't opened again since its due date passed) — the window
+    // can never start later than the due date itself.
+    if (definition.dueDate) {
+      const due = new Date(definition.dueDate);
+      due.setHours(0, 0, 0, 0);
+      if (due < from) from.setTime(due.getTime());
+    }
+    to.setFullYear(to.getFullYear() + 5);
   } else {
     to.setDate(to.getDate() + LOOKAHEAD_WEEKS * 7);
   }
@@ -159,6 +168,21 @@ export function occurrencesForTaskInMonth(occurrences, definitionId, monthKey) {
 }
 
 /**
+ * The one shared "is this due date overdue yet" rule, used everywhere an
+ * occurrence's overdue state is computed (Task Board rollup/rows, Dashboard
+ * KPIs). Due dates are stored at local midnight of the due day — comparing
+ * that raw timestamp against `now` would mark a same-day item overdue the
+ * instant the clock passes midnight. Overdue means the whole due day has
+ * elapsed, not just that some moment on it has passed.
+ */
+export function isOverdue(dueDate, now = Date.now()) {
+  if (dueDate == null) return false;
+  const d = new Date(dueDate);
+  d.setHours(23, 59, 59, 999);
+  return d.getTime() < now;
+}
+
+/**
  * Rolls a month's worth of occurrences up into one summary — this is what a
  * Task Board card shows for a task with more than one occurrence in the
  * selected period, so the board never grows a duplicate card per occurrence.
@@ -166,9 +190,9 @@ export function occurrencesForTaskInMonth(occurrences, definitionId, monthKey) {
 export function computeBoardRollup(occsInMonth, now = Date.now()) {
   const total = occsInMonth.length;
   const done = occsInMonth.filter((o) => o.status === "done").length;
-  const overdue = occsInMonth.filter((o) => o.status !== "done" && o.dueDate != null && o.dueDate < now).length;
+  const overdue = occsInMonth.filter((o) => o.status !== "done" && isOverdue(o.dueDate, now)).length;
   const upcoming = occsInMonth
-    .filter((o) => o.status !== "done" && (o.dueDate == null || o.dueDate >= now))
+    .filter((o) => o.status !== "done" && !isOverdue(o.dueDate, now))
     .sort((a, b) => (a.dueDate ?? Infinity) - (b.dueDate ?? Infinity));
   const timeSeconds = occsInMonth.reduce((n, o) => n + (o.timeSeconds || 0), 0);
   let tone = "pending";

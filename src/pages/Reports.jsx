@@ -2,21 +2,24 @@ import React, { useState, useMemo } from "react";
 import { Icon } from "../lib/Icon.jsx";
 import { Card, ProgressBar } from "../components/primitives.jsx";
 import { useAppData } from "../store/AppDataProvider.jsx";
-import { MONTHS, CURRENT_MONTH_KEY, formatHours, getEntry } from "../lib/format.js";
-import { CATEGORIES, STATUS_META } from "../data/categories.js";
-import { computeCategoryStatsForMonth } from "../lib/selectors.js";
+import { MONTHS, CURRENT_MONTH_KEY, formatHours } from "../lib/format.js";
+import { STATUS_META } from "../data/categories.js";
+import { computeUnifiedCategoryStatsForMonth, resolveTaskReportRow } from "../lib/dashboardSelectors.js";
 import { buildMonthCsv, downloadTextFile } from "../lib/exportCsv.js";
 
 export function Reports() {
-  const { monthlyData, monthStats, game, sessionStats, totalDoneAllTime } = useAppData();
+  const { monthlyData, monthStats, game, sessionStats, totalDoneAllTime, occurrences, taskDefinitions, categoryDefs, effectiveCategories, activeTimer } = useAppData();
   const [reportMonth, setReportMonth] = useState(CURRENT_MONTH_KEY);
 
   const month = MONTHS.find((m) => m.key === reportMonth);
   const stats = monthStats[reportMonth];
-  const categoryStats = useMemo(() => computeCategoryStatsForMonth(monthlyData, reportMonth), [monthlyData, reportMonth]);
+  const categoryStats = useMemo(
+    () => computeUnifiedCategoryStatsForMonth(monthlyData, occurrences, taskDefinitions, categoryDefs, reportMonth, CURRENT_MONTH_KEY, activeTimer, Date.now()),
+    [monthlyData, occurrences, taskDefinitions, categoryDefs, reportMonth, activeTimer]
+  );
 
   const exportCsv = () => {
-    const csv = buildMonthCsv(monthlyData, reportMonth, month.full);
+    const csv = buildMonthCsv(monthlyData, occurrences, effectiveCategories, taskDefinitions, reportMonth, month.full);
     downloadTextFile(`ledger-desk-${reportMonth}.csv`, csv);
   };
 
@@ -52,7 +55,7 @@ export function Reports() {
           <div className="grid grid-cols-3">
             <ReportStat label="Tasks completed" value={`${stats.completed}/${stats.total}`} />
             <ReportStat label="Hours logged" value={formatHours(stats.seconds)} />
-            <ReportStat label="Categories at 100%" value={`${categoryStats.filter((c) => c.percent === 100).length}/${CATEGORIES.length}`} />
+            <ReportStat label="Categories at 100%" value={`${categoryStats.filter((c) => c.percent === 100).length}/${categoryStats.length}`} />
           </div>
         </Card>
 
@@ -71,18 +74,20 @@ export function Reports() {
 
         <Card pad={false} className="mb-6">
           <div className="eyebrow" style={{ padding: 16, borderBottom: "1px solid var(--border)" }}>Task History — {month.full}</div>
-          {CATEGORIES.map((cat) => (
+          {effectiveCategories.map((cat) => (
             <div key={cat.id}>
               <div className="text-xs fw-bold" style={{ padding: "8px 16px", background: "var(--bg-soft)" }}>{cat.name}</div>
               {cat.tasks.map((t) => {
-                const e = getEntry(monthlyData, reportMonth, t.id);
-                const meta = STATUS_META[e.status];
+                const def = taskDefinitions.find((d) => d.id === t.id);
+                const row = def ? resolveTaskReportRow(monthlyData, occurrences, def, reportMonth) : null;
+                if (!row) return null;
+                const meta = STATUS_META[row.status];
                 return (
                   <div key={t.id} className="flex items-center justify-between text-sm" style={{ padding: "8px 16px", borderBottom: "1px solid var(--border)" }}>
                     <span className="truncate">{t.name}</span>
                     <span className="flex items-center gap-3 shrink-0">
                       <span className="pill" style={{ background: `var(--${meta.tone}-bg)`, color: `var(--${meta.tone})` }}>{meta.label}</span>
-                      <span className="mono text-xs muted" style={{ width: 56, textAlign: "right" }}>{formatHours(e.timeSeconds)}</span>
+                      <span className="mono text-xs muted" style={{ width: 56, textAlign: "right" }}>{formatHours(row.seconds)}</span>
                     </span>
                   </div>
                 );

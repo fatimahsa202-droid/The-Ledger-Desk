@@ -3,14 +3,18 @@ import { Card, StatCard, RingProgress } from "../components/primitives.jsx";
 import { LineChart, BarChart, DonutChart } from "../components/charts.jsx";
 import { useAppData } from "../store/AppDataProvider.jsx";
 import { MONTHS, CURRENT_MONTH_KEY, formatHours, formatDuration } from "../lib/format.js";
-import { computeCategoryStatsForMonth } from "../lib/selectors.js";
-import { CATEGORY_ICONS, TASK_BY_ID } from "../data/categories.js";
+import { computeUnifiedCategoryStatsForMonth } from "../lib/dashboardSelectors.js";
+import { CATEGORY_ICONS } from "../data/categories.js";
 import { Icon } from "../lib/Icon.jsx";
 
 const SEGMENT_COLORS = ["#3b82f6", "#60a5fa", "#2fd07f", "#f0b73f", "#a78bfa", "#fb6f7f", "#22d3ee", "#f472b6", "#facc15", "#4ade80", "#818cf8", "#fb923c", "#38bdf8"];
 
 export function Analytics() {
-  const { monthlyData, monthStats, sessions, sessionStats, totals, bestMonth, worstMonth, game, completedToday, settings } = useAppData();
+  const {
+    monthlyData, monthStats, sessions, sessionStats, totals, bestMonth, worstMonth, game, completedToday, settings,
+    taskDefinitions, categoryDefs, occurrences, activeTimer,
+  } = useAppData();
+  const taskDefById = useMemo(() => Object.fromEntries(taskDefinitions.map((d) => [d.id, d])), [taskDefinitions]);
 
   const thisMonth = monthStats[CURRENT_MONTH_KEY];
   const prevMonthKey = MONTHS[MONTHS.length - 2]?.key;
@@ -21,7 +25,10 @@ export function Analytics() {
   const closedMonths = MONTHS.filter((m) => monthStats[m.key].percent === 100);
   const avgCloseDuration = closedMonths.length ? closedMonths.reduce((s, m) => s + monthStats[m.key].seconds, 0) / closedMonths.length : 0;
 
-  const categoryStats = useMemo(() => computeCategoryStatsForMonth(monthlyData, CURRENT_MONTH_KEY), [monthlyData]);
+  const categoryStats = useMemo(
+    () => computeUnifiedCategoryStatsForMonth(monthlyData, occurrences, taskDefinitions, categoryDefs, CURRENT_MONTH_KEY, CURRENT_MONTH_KEY, activeTimer, Date.now()),
+    [monthlyData, occurrences, taskDefinitions, categoryDefs, activeTimer]
+  );
   const donutSegments = categoryStats.filter((c) => c.seconds > 0).map((c, i) => ({ value: c.seconds, color: SEGMENT_COLORS[i % SEGMENT_COLORS.length], label: c.name }));
 
   const topTasksByTime = useMemo(
@@ -100,7 +107,7 @@ export function Analytics() {
           <div>
             {topTasksByTime.length === 0 && <div className="text-sm muted" style={{ padding: "0 16px 16px" }}>No tracked time yet.</div>}
             {topTasksByTime.map((t) => {
-              const task = TASK_BY_ID[t.taskId];
+              const task = taskDefById[t.taskId];
               return (
                 <div key={t.taskId} className="flex items-center justify-between text-sm" style={{ padding: "9px 16px", borderTop: "1px solid var(--border)" }}>
                   <div className="flex items-center gap-2 min-w-0">

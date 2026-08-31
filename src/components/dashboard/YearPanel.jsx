@@ -23,7 +23,7 @@ export function YearPanel({ selectedCategory, year, currentMonthKey, now }) {
       const monthEnd = new Date(year, i + 1, 0, 23, 59, 59, 999).getTime();
       const recon = computeLegacyReconciliationForMonth(monthlyData, taskDefinitions, monthKey, selectedCategory);
       const legacyOverdue = computeLegacyOverdueForMonth(monthlyData, taskDefinitions, monthKey, currentMonthKey, selectedCategory);
-      const recurring = computeOccurrenceKPIs(occurrences, taskDefinitions, now, monthStart, monthEnd, selectedCategory);
+      const recurring = computeOccurrenceKPIs(occurrences, taskDefinitions, monthlyData, now, monthStart, monthEnd, selectedCategory);
       return { monthKey, monthIndex: i, recon, legacyOverdue, recurring, monthStart, monthEnd };
     });
   }, [year, monthlyData, taskDefinitions, occurrences, selectedCategory, currentMonthKey, now]);

@@ -11,7 +11,6 @@ export const NAV_SECTIONS = [
     label: "Workspace",
     items: [
       { id: "categories", label: "Categories", icon: "clipboard-list" },
-      { id: "migration", label: "Data Migration", icon: "languages" },
     ],
   },
   {
@@ -36,5 +35,5 @@ export const BOTTOM_NAV_ITEMS = [
   { id: "categories", label: "Tasks", icon: "clipboard-list" },
   { id: "timeline", label: "Timeline", icon: "activity" },
   { id: "achievements", label: "Awards", icon: "trophy" },
-  { id: "settings", label: "More", icon: "settings" },
+  { id: "settings", label: "Settings", icon: "settings" },
 ];

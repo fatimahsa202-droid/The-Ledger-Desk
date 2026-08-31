@@ -3,13 +3,13 @@ import { Icon } from "../../lib/Icon.jsx";
 import { Card, StatCard, Pill, ProgressBar, RingProgress, LevelAvatar, EmptyState } from "../primitives.jsx";
 import { useAppData } from "../../store/AppDataProvider.jsx";
 import { formatHMS, formatHours, relativeTime } from "../../lib/format.js";
-import { TASK_BY_ID } from "../../data/categories.js";
 import { levelInfo, levelTitle, levelRankTier, xpProgressPercent, quoteOfTheDay, greetingForNow, randomEncouragement } from "../../lib/gamification.js";
 import { BADGES } from "../../lib/gamification.js";
 import {
   buildAccountingSessions, sessionsInRange, sumSeconds, liveElapsedInRange,
   computeOccurrenceKPIs, computeCompletedInRange,
 } from "../../lib/dashboardSelectors.js";
+import { isOverdue } from "../../lib/occurrenceEngine.js";
 
 function iconForActivity(type) {
   switch (type) {
@@ -39,8 +39,8 @@ export function TodayPanel({ navigate, selectedCategory, dayStart, dayEnd, now }
   const dailyGoalProgress = Math.min(100, Math.round((completedToday / Math.max(1, settings.dailyGoalTasks)) * 100));
 
   const todayKpis = useMemo(
-    () => computeOccurrenceKPIs(occurrences, taskDefinitions, now, dayStart, dayEnd, selectedCategory),
-    [occurrences, taskDefinitions, now, dayStart, dayEnd, selectedCategory]
+    () => computeOccurrenceKPIs(occurrences, taskDefinitions, monthlyData, now, dayStart, dayEnd, selectedCategory),
+    [occurrences, taskDefinitions, monthlyData, now, dayStart, dayEnd, selectedCategory]
   );
   const hoursToday = useMemo(() => {
     const accSessions = buildAccountingSessions(monthlyData, occurrences, taskDefinitions);
@@ -49,8 +49,10 @@ export function TodayPanel({ navigate, selectedCategory, dayStart, dayEnd, now }
   }, [monthlyData, occurrences, taskDefinitions, dayStart, dayEnd, selectedCategory, activeTimer, now]);
 
   const nextUpTask = categoriesNeedingAttention.length > 0 ? categoriesNeedingAttention[0].id : null;
+  // Live taskDefinitions, not the static original-53-only TASK_BY_ID — otherwise
+  // any custom/graduated task's running timer shows as "Untitled task" here.
   const activeTimerTask = activeTimer
-    ? activeTimer.kind === "recon" ? TASK_BY_ID[activeTimer.taskId] : migration.tasks.find((t) => t.id === activeTimer.taskId)
+    ? activeTimer.kind === "recon" ? taskDefinitions.find((d) => d.id === activeTimer.taskId) : migration.tasks.find((t) => t.id === activeTimer.taskId)
     : null;
 
   return (
@@ -85,7 +87,7 @@ export function TodayPanel({ navigate, selectedCategory, dayStart, dayEnd, now }
               <div className="eyebrow" style={{ padding: "12px 16px", borderBottom: "1px solid var(--border)" }}>Today's recurring accounting work</div>
               <div>
                 {todayKpis.items.map((o) => {
-                  const overdue = o.status !== "done" && o.dueDate != null && (() => { const d = new Date(o.dueDate); d.setHours(23, 59, 59, 999); return d.getTime() < now; })();
+                  const overdue = o.status !== "done" && isOverdue(o.dueDate, now);
                   return (
                     <div key={o.id} className="flex items-center justify-between gap-2 text-sm" style={{ padding: "10px 16px", borderBottom: "1px solid var(--border)" }}>
                       <span className="flex items-center gap-2 truncate">

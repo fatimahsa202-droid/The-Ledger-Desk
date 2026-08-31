@@ -1,66 +1,31 @@
 import { ALL_TASKS, CATEGORIES, TASK_BY_ID } from "../data/categories.js";
 import { MONTHS, getEntry, dayKey, isoWeekKey } from "./format.js";
 
+// NOTE: the old legacy-only, static-ALL_TASKS/CATEGORIES-only
+// computeStatsForMonthKey / computeMonthStats / computeCategoryStatsForMonth
+// that used to live here have been superseded by the unified statistics
+// engine in dashboardSelectors.js (computeUnifiedMonthStats /
+// computeUnifiedMonthMap / computeUnifiedCategoryStatsForMonth), which
+// includes occurrence-driven (custom/graduated/recurring) tasks too — see
+// that file's header comment. Every caller has been moved over so
+// Analytics/Reports/Achievements/Categories' Monthly Progress and Dashboard
+// V2 can never show two different numbers for the same month/category again.
+
 /**
- * Completion + time totals for one arbitrary month key, live-timer-aware.
- * Works for any "YYYY-MM" key, not just one of the fixed MONTHS list — this
- * is what lets the Task Board navigate to a month outside that list (see
- * monthNav.js) without needing its own separate stats model.
+ * Flattened list of every work session across reconciliation + migration
+ * tasks. Category attribution is resolved live (taskDefinitions +
+ * categoryDefs, falling back to the static original-53 list only for tasks
+ * that predate Phase A) so a task's historical sessions follow it if it's
+ * later renamed or re-categorized, and a custom task's sessions never show
+ * as a raw id under a fake "Other" category.
  */
-export function computeStatsForMonthKey(monthlyData, monthKey, activeTimer, now) {
-  let completed = 0, seconds = 0;
-  ALL_TASKS.forEach((t) => {
-    const e = getEntry(monthlyData, monthKey, t.id);
-    if (e.status === "done") completed++;
-    seconds += e.timeSeconds;
-    if (activeTimer && activeTimer.kind === "recon" && activeTimer.taskId === t.id && activeTimer.monthKey === monthKey) {
-      seconds += Math.floor((now - activeTimer.startedAt) / 1000);
-    }
-  });
-  return {
-    completed,
-    total: ALL_TASKS.length,
-    seconds,
-    percent: ALL_TASKS.length ? Math.round((completed / ALL_TASKS.length) * 100) : 0,
-  };
-}
-
-/** Per-month completion + time totals, live-timer-aware, for the fixed year-to-date MONTHS list. */
-export function computeMonthStats(monthlyData, activeTimer, now) {
-  const map = {};
-  MONTHS.forEach((m) => {
-    map[m.key] = computeStatsForMonthKey(monthlyData, m.key, activeTimer, now);
-  });
-  return map;
-}
-
-export function computeCategoryStatsForMonth(monthlyData, monthKey) {
-  return CATEGORIES.map((cat) => {
-    let completed = 0, seconds = 0, inProgress = 0;
-    cat.tasks.forEach((t) => {
-      const e = getEntry(monthlyData, monthKey, t.id);
-      if (e.status === "done") completed++;
-      if (e.status === "in-progress") inProgress++;
-      seconds += e.timeSeconds;
-    });
-    return {
-      id: cat.id,
-      name: cat.name,
-      completed,
-      inProgress,
-      total: cat.tasks.length,
-      seconds,
-      percent: Math.round((completed / cat.tasks.length) * 100),
-    };
-  });
-}
-
-/** Flattened list of every work session across reconciliation + migration tasks. */
-export function flattenSessions(monthlyData, migration) {
+export function flattenSessions(monthlyData, migration, taskDefinitions, categoryDefs) {
+  const taskById = Object.fromEntries((taskDefinitions || []).map((d) => [d.id, d]));
+  const catById = Object.fromEntries((categoryDefs || []).map((c) => [c.id, c]));
   const out = [];
   Object.entries(monthlyData).forEach(([monthKey, tasks]) => {
     Object.entries(tasks || {}).forEach(([taskId, entry]) => {
-      const task = TASK_BY_ID[taskId];
+      const task = taskById[taskId] || TASK_BY_ID[taskId];
       (entry.sessions || []).forEach((s) => {
         out.push({
           ...s,
@@ -69,7 +34,7 @@ export function flattenSessions(monthlyData, migration) {
           monthKey,
           taskName: task ? task.name : taskId,
           categoryId: task ? task.categoryId : null,
-          categoryName: task ? task.categoryName : "Other",
+          categoryName: task ? (catById[task.categoryId]?.name || "Other") : "Other",
         });
       });
     });
@@ -143,12 +108,13 @@ export function taskTotals(monthlyData) {
   return totals;
 }
 
-export function longestAndFastestTasks(monthlyData) {
+export function longestAndFastestTasks(monthlyData, taskDefinitions) {
+  const taskById = Object.fromEntries((taskDefinitions || []).map((d) => [d.id, d]));
   let longest = null, fastest = null;
   Object.entries(monthlyData).forEach(([monthKey, tasks]) => {
     Object.entries(tasks || {}).forEach(([taskId, entry]) => {
       if (entry.status !== "done" || !entry.timeSeconds) return;
-      const task = TASK_BY_ID[taskId];
+      const task = taskById[taskId] || TASK_BY_ID[taskId];
       const record = { taskId, monthKey, seconds: entry.timeSeconds, taskName: task ? task.name : taskId };
       if (!longest || record.seconds > longest.seconds) longest = record;
       if (!fastest || record.seconds < fastest.seconds) fastest = record;

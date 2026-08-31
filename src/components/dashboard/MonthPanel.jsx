@@ -21,8 +21,8 @@ export function MonthPanel({ selectedCategory, monthKey, currentMonthKey, monthS
   const legacyOverdue = computeLegacyOverdueForMonth(monthlyData, taskDefinitions, monthKey, currentMonthKey, selectedCategory);
 
   const recurring = useMemo(
-    () => computeOccurrenceKPIs(occurrences, taskDefinitions, now, monthStart, monthEnd, selectedCategory),
-    [occurrences, taskDefinitions, now, monthStart, monthEnd, selectedCategory]
+    () => computeOccurrenceKPIs(occurrences, taskDefinitions, monthlyData, now, monthStart, monthEnd, selectedCategory),
+    [occurrences, taskDefinitions, monthlyData, now, monthStart, monthEnd, selectedCategory]
   );
 
   const accSessions = useMemo(() => buildAccountingSessions(monthlyData, occurrences, taskDefinitions), [monthlyData, occurrences, taskDefinitions]);

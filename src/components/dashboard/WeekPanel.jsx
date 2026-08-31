@@ -17,8 +17,8 @@ export function WeekPanel({ selectedCategory, weekStart, now }) {
   const weekEnd = endOfWeekSunday(weekStart);
 
   const kpis = useMemo(
-    () => computeOccurrenceKPIs(occurrences, taskDefinitions, now, weekStart, weekEnd, selectedCategory),
-    [occurrences, taskDefinitions, now, weekStart, weekEnd, selectedCategory]
+    () => computeOccurrenceKPIs(occurrences, taskDefinitions, monthlyData, now, weekStart, weekEnd, selectedCategory),
+    [occurrences, taskDefinitions, monthlyData, now, weekStart, weekEnd, selectedCategory]
   );
   const completed = computeCompletedInRange(monthlyData, occurrences, taskDefinitions, weekStart, weekEnd, selectedCategory);
 

@@ -1,7 +1,7 @@
 import React, { useState } from "react";
 import { Icon } from "../../lib/Icon.jsx";
 import { IconButton } from "../primitives.jsx";
-import { connectGoogleAccount, finalizeConnection, abandonPendingConnection, triggerSync } from "../../lib/google/sheetConnectionsApi.js";
+import { connectGoogleAccount, finalizeConnection, abandonPendingConnection, triggerSync, findExistingActiveConnection } from "../../lib/google/sheetConnectionsApi.js";
 import { openSheetPicker } from "../../lib/google/googlePicker.js";
 import { listSheetTabs, getHeaderRow } from "../../lib/google/sheetsApi.js";
 
@@ -22,6 +22,20 @@ export function ConnectSheetWizard({ onClose, onConnected }) {
   const [nameColumn, setNameColumn] = useState("");
   const [dateColumn, setDateColumn] = useState("");
   const [displayName, setDisplayName] = useState("");
+  // Set when this user already has an active connection to the same
+  // spreadsheet+tab — a friendly pre-flight layer; the DB's own partial
+  // unique index is what actually guarantees this (see finalizeConnection's
+  // 23505 handling for the race this check alone can't close).
+  const [existingConnection, setExistingConnection] = useState(null);
+
+  const checkExisting = async (spreadsheetId, tab) => {
+    if (!spreadsheetId || !tab) { setExistingConnection(null); return; }
+    try {
+      setExistingConnection(await findExistingActiveConnection(spreadsheetId, tab));
+    } catch {
+      setExistingConnection(null); // best-effort — the real backstop is the DB constraint, not this check
+    }
+  };
 
   const handleClose = async () => {
     if (connectionId && step !== STEP.CONNECT) {
@@ -52,6 +66,7 @@ export function ConnectSheetWizard({ onClose, onConnected }) {
       if (firstTab) {
         const headerRow = await getHeaderRow(result.accessToken, doc.id, firstTab);
         setHeaders(headerRow);
+        await checkExisting(doc.id, firstTab);
       }
       setStep(STEP.MAP);
     } catch (err) {
@@ -70,6 +85,7 @@ export function ConnectSheetWizard({ onClose, onConnected }) {
     try {
       const headerRow = await getHeaderRow(accessToken, spreadsheet.id, title);
       setHeaders(headerRow);
+      await checkExisting(spreadsheet.id, title);
     } catch (err) {
       setError(err.message || "Could not read that tab's columns.");
     } finally {
@@ -137,6 +153,12 @@ export function ConnectSheetWizard({ onClose, onConnected }) {
                   {tabs.map((t) => <option key={t.sheetId} value={t.title}>{t.title}</option>)}
                 </select>
 
+                {existingConnection && (
+                  <div className="text-xs mb-3" style={{ color: "var(--gold)", background: "color-mix(in srgb, var(--gold) 10%, transparent)", borderRadius: 8, padding: "8px 10px" }}>
+                    Already connected — this Sheet and tab are already connected as "{existingConnection.display_name || existingConnection.spreadsheet_name}". Close this and look for it under Connected Sheets, or pick a different tab.
+                  </div>
+                )}
+
                 <div className="grid grid-cols-2 gap-2 mb-3">
                   <div>
                     <label className="field-label">Name column</label>
@@ -159,7 +181,7 @@ export function ConnectSheetWizard({ onClose, onConnected }) {
                 <label className="field-label">Connection name</label>
                 <input className="input mb-4" value={displayName} onChange={(e) => setDisplayName(e.target.value)} placeholder="e.g. Reception Schedule" />
 
-                <button className="btn btn-primary" onClick={handleFinishConnect} disabled={busy || !nameColumn || !dateColumn}>
+                <button className="btn btn-primary" onClick={handleFinishConnect} disabled={busy || !nameColumn || !dateColumn || !!existingConnection}>
                   {busy ? "Connecting…" : "Connect"}
                 </button>
               </div>

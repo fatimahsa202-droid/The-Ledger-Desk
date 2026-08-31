@@ -14,7 +14,6 @@ import { CommandPalette } from "./components/CommandPalette.jsx";
 
 import { Dashboard } from "./pages/Dashboard.jsx";
 import { Categories } from "./pages/Categories.jsx";
-import { Migration } from "./pages/Migration.jsx";
 import { Timeline } from "./pages/Timeline.jsx";
 import { CalendarPage } from "./pages/CalendarPage.jsx";
 import { Analytics } from "./pages/Analytics.jsx";
@@ -26,7 +25,6 @@ import { Settings } from "./pages/Settings.jsx";
 const PAGES = {
   dashboard: Dashboard,
   categories: Categories,
-  migration: Migration,
   timeline: Timeline,
   calendar: CalendarPage,
   analytics: Analytics,
