@@ -11,6 +11,15 @@
 -- duplicate groups exist, which connection would be canonical, how many
 -- Scheduled Names belong to each, and whether their completion states
 -- differ — nothing is healed here, this is inspection only.
+--
+-- Sections 1-3: duplicate connection groups specifically.
+-- Section 4: the general case — ANY inactive connection (duplicate or a
+--   plain, already-disconnected one) still owning scheduled_names rows
+--   stuck at source_status = 'active'. This is what actually explains
+--   stale names still appearing on Calendar for connections disconnected
+--   before this fix existed.
+-- Section 5: the healing UPDATE for section 4's rows, written out but not
+--   run by this file — copy/run it separately, only after approval.
 -- ============================================================================
 
 -- ----------------------------------------------------------------------------
@@ -124,3 +133,63 @@ with dup_groups as (
 select user_id, spreadsheet_id, sheet_tab, connection_count
 from dup_groups
 order by user_id, spreadsheet_id, sheet_tab;
+
+-- ============================================================================
+-- 4) STALE-ACTIVE-ROW dry-run — the general case, not limited to duplicate
+--    groups. Any sheet_connections row that is currently is_active = false
+--    (however it got that way: a plain Disconnect that predates the
+--    Calendar-read-side fix in this commit, or the losing side of a
+--    duplicate/reconnect) can still own scheduled_names rows stuck at
+--    source_status = 'active', because historically nothing ever went back
+--    and corrected them after the connection itself was deactivated. This
+--    is the exact rule from the required invariant: "Calendar must never
+--    display Scheduled Names whose owning sheet_connection.is_active =
+--    false" — the app's read layer (fetchScheduledNamesInRange) now also
+--    enforces this directly, but these rows are still wrong data at rest
+--    and should be corrected too. READ-ONLY — still just a SELECT.
+-- ============================================================================
+select
+  sc.user_id,
+  sc.id as connection_id,
+  sc.display_name,
+  sc.spreadsheet_name,
+  sc.sheet_tab,
+  sc.is_active,
+  sc.updated_at as connection_deactivated_or_last_updated_at,
+  count(sn.id) as stale_active_rows_count,
+  count(sn.id) filter (where sn.status = 'done') as stale_active_rows_already_done,
+  count(sn.id) filter (where sn.status = 'pending') as stale_active_rows_still_pending,
+  min(sn.scheduled_date) as earliest_stale_date,
+  max(sn.scheduled_date) as latest_stale_date
+from sheet_connections sc
+join scheduled_names sn on sn.connection_id = sc.id
+where sc.is_active = false
+  and sn.source_status = 'active'
+group by sc.user_id, sc.id, sc.display_name, sc.spreadsheet_name, sc.sheet_tab, sc.is_active, sc.updated_at
+order by stale_active_rows_count desc;
+
+-- Grand total, for a quick before/after sanity check against the healing run.
+select count(*) as total_stale_active_rows_across_all_inactive_connections
+from scheduled_names sn
+join sheet_connections sc on sc.id = sn.connection_id
+where sc.is_active = false and sn.source_status = 'active';
+
+-- ============================================================================
+-- 5) HEALING SQL — separated on purpose, NOT executed as part of this file.
+--    Copy this statement out and run it by itself, only after reviewing the
+--    dry-run output above and giving explicit approval. It only ever
+--    changes source_status on rows whose owning connection is inactive —
+--    it never deletes a scheduled_names row, a sheet_connections row, OAuth
+--    tokens, or the Google row-identity UUID embedded in each id, and it
+--    never touches status/completed_at (completion history is preserved
+--    exactly as-is; only visibility on Calendar changes). Idempotent: safe
+--    to run more than once, and safe to run even if some rows were already
+--    healed by a prior partial run.
+--
+--    update scheduled_names sn
+--    set source_status = 'removed'
+--    from sheet_connections sc
+--    where sc.id = sn.connection_id
+--      and sc.is_active = false
+--      and sn.source_status = 'active';
+-- ============================================================================
